@@ -1,0 +1,213 @@
+// Architecture Élite v2 — Plateforme de génération de séquences pédagogiques
+// Source : upload/architecture elite v2.pdf
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// RÉFÉRENTIEL STRUCTUREL — la matière première, jamais générée
+// ============================================================
+
+model Notion {
+  id          String   @id @default(cuid())
+  nom         String
+  description String
+  niveau      String   // "6e", "5e", "4e", "3e", "2nde", "1ere", "Term"
+  chapitre    String   // "Nombres et calculs", "Géométrie", etc.
+  competences String   // JSON array string
+  objectifs   String   // JSON array string
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  prerequisPour  Prerequis[] @relation("PrerequisNotion")
+  prerequisDe    Prerequis[] @relation("PrerequisRequis")
+  sequences      SequenceNotion[]
+  exemples       CorpusVectoriel[] @relation("NotionExemple")
+  progressions   Progression[]
+}
+
+model Prerequis {
+  id           String @id @default(cuid())
+  notionId     String
+  prerequisId  String
+  obligation   String @default("recommande") // "obligatoire" | "recommande"
+  notion       Notion @relation("PrerequisNotion", fields: [notionId], references: [id], onDelete: Cascade)
+  prerequis    Notion @relation("PrerequisRequis", fields: [prerequisId], references: [id], onDelete: Cascade)
+
+  @@unique([notionId, prerequisId])
+}
+
+model Progression {
+  id        String  @id @default(cuid())
+  niveau    String
+  chapitre  String
+  notionId  String
+  semaine   Int     // ordre chronologique dans l'année
+  dureeMin  Int     @default(50) // durée indicative en minutes
+  notion    Notion  @relation(fields: [notionId], references: [id])
+  sequence  Sequence?
+
+  @@unique([niveau, chapitre, notionId])
+}
+
+model Regle {
+  id        String   @id @default(cuid())
+  niveau    String
+  cle       String   // "style_ton", "longueur_section", "format_questions"...
+  valeur    String   // JSON string
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+// ============================================================
+// CORPUS VECTORIEL — une seule table, deux façons d'y accéder
+// retrieve_pedagogical_examples(notion, k) → type='exemple_pedagogique'
+// retrieve_style_reference(niveau, chapitre, k=3) → type='fiche_reference' AND exemplaire=true
+// ============================================================
+
+model CorpusVectoriel {
+  id          String   @id @default(cuid())
+  contenu     String   // texte indexé
+  embedding   String   // TF-IDF vector encodé en JSON (cosine en TS)
+  type        String   // "exemple_pedagogique" | "fiche_reference"
+  niveau      String
+  chapitre    String
+  statut      String   @default("brouillon") // "brouillon" | "validee"
+  exemplaire  Boolean  @default(false)       // marquée comme référence de style par un humain
+  notionId    String?
+  notion      Notion?  @relation("NotionExemple", fields: [notionId], references: [id])
+  metadata    String?  // JSON: {source, auteur, date_validation...}
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([type, niveau, chapitre, statut, exemplaire])
+}
+
+// ============================================================
+// SÉQUENCE — l'objet central, peut couvrir plusieurs notions
+// ============================================================
+
+model Sequence {
+  id                 String   @id @default(cuid())
+  titre              String
+  notionIds          String   // JSON array string — notion_ids[]
+  niveau             String
+  chapitre           String
+  semaine            Int
+  statut             String   @default("en_attente") // "en_attente" | "planifiee" | "en_cours" | "validee" | "echec"
+  priorite           Int      @default(0)             // simple, PAS un moteur de scheduling
+  contexteClasse     String?  // JSONB optionnel: {effectif, materiel, duree_min}
+  templateVersion    String   @default("v1")
+  curriculumVersion  String   @default("v1")
+  progressionId      String?  @unique
+  progression        Progression? @relation(fields: [progressionId], references: [id])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  notions            SequenceNotion[]
+  generationContext  GenerationContext?
+  livrables          Livrable[]
+  agentRuns          AgentRun[]
+
+  @@index([statut, priorite, semaine])
+}
+
+model SequenceNotion {
+  sequenceId String
+  notionId   String
+  sequence   Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  notion     Notion   @relation(fields: [notionId], references: [id], onDelete: Cascade)
+
+  @@id([sequenceId, notionId])
+}
+
+// ============================================================
+// GENERATION CONTEXT — objet figé, rejouable
+// ============================================================
+
+model GenerationContext {
+  id          String   @id @default(cuid())
+  sequenceId  String   @unique
+  payloadJson String   // GenerationContext complet (Zod-validated) sérialisé
+  compiledAt  DateTime @default(now())
+  sequence    Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================
+// LIVRABLE — le document produit
+// ============================================================
+
+model Livrable {
+  id            String   @id @default(cuid())
+  sequenceId    String
+  type          String   @default("fiche") // "fiche" | "fiche_complete"
+  contenuJson   String   // sections, méthodes, etc.
+  format        String   @default("markdown") // "markdown" | "html" | "pdf"
+  valide        Boolean  @default(false)
+  skillVersion  String   @default("v1") // version du skill utilisé
+  agentTraceId  String?  // lien vers l'agent_run final
+  createdAt     DateTime @default(now())
+  sequence      Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  validations   ValidationResult[]
+
+  @@index([sequenceId, valide])
+}
+
+// ============================================================
+// VALIDATION RESULT — résultat du Critique 2 couches
+// ============================================================
+
+model ValidationResult {
+  id                  String   @id @default(cuid())
+  livrableId          String
+  structurelPass      Boolean
+  structurelRaisons   String   // JSON array
+  pedagogiquePass     Boolean?
+  pedagogiqueRaisons  String?  // JSON array
+  sectionARegenerer   String?
+  coucheDeclenchee    String   @default("structurel") // "structurel" | "pedagogique"
+  skillVersion        String   @default("v1") // version du validate_pedagogique
+  createdAt           DateTime @default(now())
+  livrable            Livrable @relation(fields: [livrableId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================
+// AGENT RUN — traçabilité complète
+// ============================================================
+
+model AgentRun {
+  id          String   @id @default(cuid())
+  sequenceId  String?
+  batchId     String?  // regroupe les runs d'un même batch
+  agent       String   // "planificateur" | "knowledge_compiler" | "redacteur" | "critique" | "superviseur"
+  skill       String?  // "generate_section_pair_v1", "validate_pedagogique_v2"...
+  input       String   // JSON
+  output      String   // JSON
+  decision    String   // "continue" | "retry" | "fail" | "escalade_humaine"
+  durationMs  Int
+  statut      String   @default("ok") // "ok" | "warning" | "error"
+  timestamp   DateTime @default(now())
+  sequence    Sequence? @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+
+  @@index([sequenceId, agent, timestamp])
+  @@index([batchId, timestamp])
+}
+
+// ============================================================
+// FICHE TEMPLATE — versionné
+// ============================================================
+
+model FicheTemplate {
+  id          String   @id @default(cuid())
+  version     String   @unique // "v1", "v2"...
+  nom         String
+  structure   String   // JSON: sections, champs, contraintes
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}

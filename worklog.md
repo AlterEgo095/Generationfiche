@@ -1,0 +1,203 @@
+# Worklog — Plateforme Élite v2
+
+Plateforme de génération de séquences pédagogiques avec agents autonomes, base de connaissances vectorielle unique, et critique à deux couches.
+
+Architecture source : `upload/architecture elite v2.pdf` (7 pages, FR).
+
+## Stack adaptée
+- LangGraph → orchestration TypeScript custom (graphe explicite par étapes)
+- Pydantic → Zod schemas
+- Postgres + pgvector → SQLite + Prisma + similarité textuelle (TF-IDF cosine)
+- Redis + RQ → file en mémoire + WebSocket (socket.io mini-service port 3003)
+- Jinja2 → templates JSON + rendu TypeScript
+- FastAPI → Next.js API routes (App Router)
+- LLM via z-ai-web-dev-sdk pour Rédacteur + Critique pédagogique
+
+---
+Task ID: 1
+Agent: Main (Z.ai Code)
+Task: Set up Prisma schema + seed data (French curriculum: maths/sciences notions, prerequis, progressions, pedagogical examples, reference sheets, fiche_template)
+
+Work Log:
+- Reading architecture PDF to extract all entities and contracts
+- Designing Prisma schema with all tables from §7 Modèle de données
+- Adding curriculum reference tables (notion, prerequis, progression, regle, fiche_template)
+- Seed: French secondary maths/sciences curriculum (~6 notions, prerequis, 3 weeks of progression, ~12 pedagogical examples, ~3 reference sheets marked exemplaires, 1 fiche_template_v1)
+
+---
+Task ID: 2
+Agent: Main (Z.ai Code)
+Task: Build shared foundation — Zod contracts, skills catalog, retrieval (TF-IDF), seed data
+
+Work Log:
+- src/lib/contracts.ts: Zod schemas (CurriculumSpec, StyleReference, GenerationContext, SectionContent, ValidationResult, RenderedDocument, PipelineEvent, BatchPlan) + FICHE_TEMPLATE_V1_SECTIONS + SECTION_LABELS
+- src/lib/skills-catalog.ts: 12 skills versionnées (generate_section_pair v1/v2, validate_pedagogique v1/v2, resolve_batch_plan, check_prerequisites_covered, fetch_curriculum_spec, retrieve_pedagogical_examples, retrieve_style_reference, render_fiche, export_render, commit_batch)
+- src/lib/retrieval.ts: TF-IDF + cosine similarity (alternative légère à pgvector)
+- prisma/seed.ts: 8 notions (maths+sciences 5e/6e/4e), 5 prérequis, 8 progressions, 10 règles, 13 exemples pédagogiques, 3 fiches référence exemplaires, 8 séquences (statuts variés), 4 livrables validés avec validation_result + 5 agent_runs chacun
+- src/lib/db.ts: silenced query log
+
+Stage Summary:
+- Database seeded and ready. 8 sequences live (4 validées, 1 en_cours, 1 planifiee, 2 en_attente).
+- Shared contracts available for both subagents to import.
+
+## API CONTRACT (à respecter par backend + frontend)
+
+### Routes REST (Next.js API, App Router, src/app/api/...)
+- GET  /api/dashboard                    → { counts: {sequences, livrables, corpus, notions, agentRuns}, byStatut: {validee,en_cours,planifiee,en_attente,echec}, funnel: {generees, structurel_ok, pedagogique_ok, validees}, recentRuns: AgentRun[], recentLivrables: Livrable[] }
+- GET  /api/sequences?statut=&niveau=&chapitre=  → Sequence[]
+- GET  /api/sequences/[id]               → Sequence + notions + generationContext + livrables(validations) + agentRuns
+- POST /api/sequences                    → create manually (body: {titre, niveau, chapitre, semaine, notionIds[], priorite, contexteClasse?})
+- GET  /api/corpus?type=&niveau=&chapitre=&statut=&exemplaire=  → CorpusVectoriel[]
+- POST /api/corpus                       → create (body: {contenu, type, niveau, chapitre, notionId?, exemplaire?})
+- PATCH /api/corpus/[id]                 → update (body: {statut?, exemplaire?, contenu?})
+- GET  /api/agent-runs?agent=&batchId=&sequenceId=  → AgentRun[]
+- GET  /api/skills                       → SkillDescriptor[]
+- GET  /api/templates                    → FicheTemplate[]
+- GET  /api/referentiel                  → { notions, prerequis, progressions, regles }
+- GET  /api/livrables/[id]               → Livrable + validations
+- POST /api/pipeline/generate            → { mode: 'single'|'batch', sequenceId?, demande?, skillVersion: 'v1'|'v2', validateVersion: 'v1'|'v2' } → { batch_id, items: BatchPlanItem[], started_at }
+- GET  /api/pipeline/batch/[id]          → { batch_id, items: [{sequence_id, statut, livrable_id?}], stats }
+
+### WebSocket mini-service (port 3003)
+- Frontend connect: io("/?XTransformPort=3003")
+- Client emits: { event: 'subscribe', data: { batch_id } }
+- Server emits: { event: 'pipeline:event', data: PipelineEvent }
+- PipelineEvent: { batch_id, sequence_id?, agent, skill?, phase: 'start'|'progress'|'done'|'error'|'retry'|'escalade', message, payload?, timestamp, duration_ms? }
+
+## UI ROUTING (single SPA, / route only)
+- Zustand store for active section: 'dashboard' | 'sequences' | 'corpus' | 'generations' | 'traces' | 'skills' | 'templates' | 'referentiel'
+- Sidebar nav switches sections client-side (NO new routes)
+
+---
+Task ID: 3-a
+Agent: full-stack-developer
+Task: Build the BACKEND of Architecture Élite v2 — WebSocket mini-service (port 3003) + 5-stage pipeline (Planificateur, Knowledge Compiler, Rédacteur, Critique 2 couches, Superviseur) + 11 API routes. Full agent_run traceability, fire-and-forget pipeline generation, real LLM via z-ai-web-dev-sdk (server-side only).
+
+Work Log:
+- Read shared foundation: contracts.ts (Zod schemas + FICHE_TEMPLATE_V1_SECTIONS + PipelineEvent), skills-catalog.ts (12 skills versionnées), retrieval.ts (TF-IDF + cosine), prisma schema + seed (8 notions, 8 séquences, 4 livrables validés seeded).
+- Built `mini-services/pipeline-service/` (new bun project): socket.io port 3003 path '/', rooms `batch:<batch_id>`, events `subscribe` / `pipeline:emit` / `pipeline:event`. Added aux port 3004 (HTTP POST /emit + GET /health) because socket.io with path='/' intercepts all URLs on port 3003. Started detached via `setsid bun run dev`.
+- Built `src/lib/pipeline/planificateur.ts`: resolve_batch_plan (parsing flexible demande, tri semaine ASC/priorite DESC, check_prerequisites_covered), fetchCurriculumSpec.
+- Built `src/lib/pipeline/knowledge-compiler.ts`: deterministic. retrieve_pedagogical_examples (TF-IDF k=5), retrieve_style_reference (filtre strict + fallbacks), regles + contexte_classe. Persiste GenerationContext figé (upsert, jamais recompilé sauf forceRecompile).
+- Built `src/lib/pipeline/redacteur.ts`: generateSectionPair v1 (sobre) + v2 (engageant, verbes d'action) via z-ai-web-dev-sdk. System prompt embed GenerationContext complet. Parse JSON (3 stratégies) + fallback texte dégradé si LLM KO. generateAllSections avec callback onProgress.
+- Built `src/lib/pipeline/critique.ts`: validateStructurel (TS pur — sections présentes, longueurs min selon regles.longueur_section, cohérence durées). validatePedagogique (LLM, 3 dimensions /4 en v1, +adéquation contexte_classe en v2 si présent). Pass si toutes ≥3. Fallback gracieux.
+- Built `src/lib/pipeline/superviseur.ts`: renderFiche (assemblage Markdown selon template v1), exportRender (markdown/html), commitBatch (atomicité par séquence, escalade humaine si decision='escalade_humaine').
+- Built `src/lib/pipeline/orchestrator.ts`: runPipeline orchestre les 5 étapes avec retries max 2 par section (retry ciblé sur section_a_regenerer), escalade au-delà. Persiste AgentRun à chaque étape (agent/skill/input/output/decision/duration_ms/statut). Émet PipelineEvent via POST http://127.0.0.1:3004/emit. Délais 400-600ms entre étapes pour UX live. Accepte batchId forcé en amont pour fire-and-forget.
+- Built 11 API routes: dashboard, sequences (GET+POST), sequences/[id], corpus (GET+POST), corpus/[id] (PATCH), agent-runs, skills, templates, referentiel, livrables/[id], pipeline/generate (POST fire-and-forget), pipeline/batch/[id] (GET).
+- Verified: bun run lint → EXIT 0. Mini-service running (PID actif, ports 3003+3004 listen).
+- E2E test: curl POST /api/pipeline/generate with mode=batch demande="Géométrie 4e" → batch_id retourné en ~1.2s. Pipeline ~2 min plus tard: 2 séquences validee, 2 livrables créés avec ValidationResult (structurel_pass=true, pedagogique_pass=true), 16 agent_runs tracés (avec 1 retry observé sur Thalès).
+
+Stage Summary:
+- Backend 100% fonctionnel. 5 agents autonomes sur leur périmètre (§5), Knowledge Compiler déterministe (pas LLM), critique 2 couches (TS puis LLM), retries bornés, escalade humaine, traçabilité complète via agent_runs.
+- 11 routes API REST opérationnelles. WebSocket mini-service sur port 3003 (path /) + 3004 (HTTP emit interne).
+- LLM z-ai-web-dev-sdk utilisé uniquement server-side (redacteur + critique pedagogique). Aucun crash possible : tous les appels LLM ont fallback gracieux.
+- Prêt pour intégration frontend (tâche 3-b) — voir /agent-ctx/3-a-full-stack-developer.md pour le détail des fichiers et déviations du contrat.
+
+---
+Task ID: 3-b
+Agent: full-stack-developer
+Task: Build the FRONTEND of Architecture Élite v2 — single-page app (route `/`) with 8 sections, Zustand navigation, TanStack Query for server state, WebSocket hook for live pipeline events. French UI, emerald/teal palette, dark sidebar, sticky footer, framer-motion transitions.
+
+Work Log:
+- Read previous agents' worklog + 3-a agent-ctx (full API contract, PipelineEvent shape, fire-and-forget generate, WS port 3003 + 3004 internals).
+- Sampled live API: `/api/dashboard`, `/api/sequences`, `/api/sequences/[id]`, `/api/corpus`, `/api/agent-runs`, `/api/skills`, `/api/templates`, `/api/referentiel`, `/api/pipeline/generate`, `/api/pipeline/batch/[id]`. All return data as expected (sequence detail returns generationContext + livrables(with validations) + agentRuns in one shot).
+- Installed `socket.io-client` (was missing).
+- Foundation:
+  - `src/lib/types.ts` — full TypeScript types for every API shape.
+  - `src/lib/api.ts` — typed fetch helpers (sequences, corpus, agent-runs, skills, templates, referentiel, dashboard, pipeline generate, batch). All relative paths.
+  - `src/lib/store.ts` — Zustand store (`activeSection`, `generationPreset`, `activeBatchId`, `sidebarOpen`). `SECTION_META` map (FR titles + descriptions).
+  - `src/lib/ui.ts` — color maps + labels for agents (planificateur=slate, knowledge_compiler=teal, redacteur=emerald, critique=amber, superviseur=violet), statuts, décisions, phases, run statuts. `timeAgo`, `formatDuration`, `formatTime` helpers.
+  - `src/hooks/use-pipeline-events.ts` — WebSocket hook. Connects `io('/?XTransformPort=3003')`, emits `subscribe {batch_id}`, listens `pipeline:event`. Uses React 19 idiomatic patterns (derived state for batch reset, named handlers + `socket.off()` cleanup, ref stable callback via useEffect).
+- Shared UI:
+  - `src/components/ui/status-badge.tsx` — `StatutBadge`, `AgentBadge`, `DecisionBadge`, `PhaseBadge`, `RunStatutDot`, `SkillVersionBadge`, `NiveauBadge` (all color-coded via lib/ui maps).
+  - `src/components/ui/json-viewer.tsx` — collapsible tree with mono font + syntax coloring (keys=teal, strings=emerald, numbers=amber, null=rose).
+  - `src/components/app-shell.tsx` — `min-h-screen flex flex-col` wrapper: dark Sidebar (desktop 260px) + Sheet (mobile), TopBar, main content, sticky Footer (`mt-auto`). Footer shows mini-service status indicators.
+  - `src/components/sections/sidebar.tsx` — dark sidebar with brand (Élite + Sparkles gradient), 8 nav items, active state with left emerald bar, footer status dot (green=opérationnel / amber ping=live).
+  - `src/components/sections/topbar.tsx` — section title/description, live batch chip (pinging dot), theme toggle (lucide Sun/Moon), brand chip on desktop. Uses `useSyncExternalStore` for mounted state (no setState-in-effect).
+  - `src/components/sections/states.tsx` — shared `LoadingState` (skeleton grid), `ErrorState` (rose alert + retry), `EmptyState` (icon + title + description).
+- Globals: rewrote `src/app/globals.css` with emerald/teal palette (NO blue/indigo), light + dark themes, dark sidebar in both, custom scrollbar `.scroll-elite`, `elite-pulse` keyframe, glass-elite backdrop blur.
+- Layout: `src/app/layout.tsx` (server component) + `src/app/providers.tsx` (client) — ThemeProvider + QueryClientProvider + Toaster + SonnerToaster. `<html lang="fr">`, title "Élite — Plateforme pédagogique agentique".
+- 8 sections, each in `src/components/sections/`:
+  1. `dashboard-section.tsx` — 4 KPI cards (gradient icons: sequences/livrables/corpus/traces), funnel bars (Demandes→Générées→Structurel OK→Pédagogique OK→Validées) with motion, donut "Séquences par statut" (SVG inline), recent agent runs table (max 10, scrollable), recent livrables cards (clickable → preset sequence detail). Refetch every 15s via TanStack Query.
+  2. `sequences-section.tsx` — sticky filters bar (statut/niveau/chapitre/search), responsive grid (1/2/3 cols), card with titre + niveau + chapitre + semaine + statut + priorité (stars) + notions chips + livrable count. Detail Sheet (right, wide) with header (contexte_classe chips) + 4 tabs: Contexte (structured payload viewer), Livrable (sections with markdown render + méthode blockquote), Validation (2 layers with "couche décisive" highlight), Traces (vertical timeline with collapsible input/output JSON). "Générer/Régénérer" button → sets preset + navigates to generations.
+  3. `corpus-section.tsx` — info banner ("Seules les fiches exemplaires nourrissent le style"), filters bar (type/niveau/chapitre/statut/exemplaire/search), shadcn Table with sticky header (max-h-600px scroll), Switch toggle for exemplaire (PATCH on click → toast), dropdown for statut change, Add Dialog (form: contenu/type/niveau/chapitre/notionId/exemplaire).
+  4. `generations-section.tsx` — KILLER FEATURE. Launcher Card: ToggleGroup mode (single/batch), Select sequence or Textarea demande + 3 quick-pick chips, VersionPicker cards for skill v1/v2 and validate v1/v2 with descriptions, Rocket launch button. On launch: POST `/api/pipeline/generate` → batch plan card (sequence titre, semaine, priorite, prerequis_couverts + ready badges). WebSocket subscription via `usePipelineEvents` hook. Live view 2-column (desktop): left = sequence pipeline cards with 5 stage pills (Planificateur/Knowledge Compiler/Rédacteur/Critique/Superviseur) using AnimatePresence for state transitions (pending/running/done/error/escalade), per-sequence Progress bar, outcome badge (Validé/Échec/Escalade) with "Voir le livrable" link. Right = event stream (auto-scroll, max 200, monospace, timestamp + phase badge + agent + message). Connection indicator (radio icon pulse).
+  5. `traces-section.tsx` — stats bar (4 KPI: total, avg duration, error rate, recent 24h), by-agent chips (clickable filter), filters bar (agent/decision/statut/batch_id/sequence_id), vertical timeline (left line + dots), each entry = card with statut dot + agent badge + skill badge + decision badge + duration + timeAgo + expandable input/output JSON. "Load more" button (20 at a time, max 100).
+  6. `skills-section.tsx` — grouped by agent (5 sections with icon + description). Versioned skills (generate_section_pair, validate_pedagogique) shown as side-by-side v1 vs v2 comparison cards with VS divider, critique highlight, parametres chips. Non-versioned skills as collapsible cards with parametres table.
+  7. `templates-section.tsx` — version selector, visual structure (vertical list of sections with id, label, obligatoire badge, min_mots, duree_min, color-coded by obligatoire), contraintes block (ton, format_questions), collapsible raw JSON viewer.
+  8. `referentiel-section.tsx` — Tabs: Notions (cards grid with competences chips, objectifs list, expandable prerequis), Prérequis (visual graph: notion ← prerequis with obligation badge color-coded rose/amber), Progressions (sortable table by semaine with niveau filter chips), Règles (grouped by niveau, table with cle/valeur parsed + read-only active Switch).
+- Main page (`src/app/page.tsx`) — 'use client', wraps in AppShell, renders active section based on Zustand `activeSection`, AnimatePresence mode="wait" for fade+slide transitions.
+
+Quality:
+- Every section has LoadingState (skeleton) + ErrorState (rose alert + retry).
+- All fetches via TanStack Query (`useQuery`) with staleTime 15-60s, dashboard refetches every 15s.
+- Mobile responsive: sidebar collapses to Sheet with hamburger button (fixed top-left on small screens).
+- Sticky footer at bottom (`min-h-screen flex flex-col` wrapper, `mt-auto` footer) — pushes down naturally on overflow.
+- NO English UI strings. NO blue/indigo (only emerald/teal/slate/amber/rose/violet). NO hardcoded data — everything from API.
+- Accessibility: aria-labels on icon buttons, aria-current on active nav, role="banner"/"main"/"contentinfo"/"log", keyboard-navigable buttons throughout.
+- `bun run lint` → EXIT 0 ✅ (after fixing 3 issues: layout QueryClient serialization → moved to Providers client component, React 19 setState-in-effect rule → useSyncExternalStore for mounted + eslint-disable for legitimate preset-apply effect, refs-during-render rule → useEffect to update onEventRef).
+
+Deviations from spec (with rationale):
+1. **Donut chart custom SVG inline** instead of recharts — lighter, no extra deps, exact styling control. Same visual outcome (segments + center count).
+2. **Funnel custom horizontal bars** instead of Recharts BarChart — simpler animation via framer-motion, exact label/percentage alignment.
+3. **Layout split into `layout.tsx` (server) + `providers.tsx` (client)** — required because QueryClient is a class instance and can't be serialized from a Server Component. Standard React Query + Next.js App Router pattern.
+4. **`useSyncExternalStore` for mounted state in TopBar** instead of `useEffect(() => setMounted(true))` — React 19 ESLint rule `react-hooks/set-state-in-effect` blocks the standard pattern. `useSyncExternalStore` is the canonical alternative.
+5. **`usePipelineEvents` uses derived-state-on-prop-change pattern** (`prevBatchId` ref) to reset events when batchId changes — avoids setState-in-effect lint violation while preserving behavior.
+
+Stage Summary:
+- Frontend 100% fonctionnel. Toutes les 8 sections opérationnelles, navigation SPA fluide via Zustand, transitions framer-motion entre sections.
+- Live pipeline view fonctionnel : le hook WebSocket se connecte, s'abonne au batch, reçoit les `pipeline:event`, met à jour les stage pills + progress bars + event stream en temps réel. Vérifié via curl POST /api/pipeline/generate → réponse immédiate {batch_id, items, ws_room}.
+- Design system cohérent: palette emerald/teal stricte (zero blue/indigo), sidebar sombre en permanence, glass-elite topbar, scrollbar custom `scroll-elite`, animations `elite-pulse` pour indicateurs live.
+- `bun run lint` EXIT 0 ✅. Page loads HTTP 200 (37540 bytes SSR). Tous les endpoints API répondent 200.
+- Mobile: sidebar en Sheet (hamburger fixed top-left), grid 1→2→3 colonnes selon breakpoint, footer sticky.
+- Aucune dépendance externe ajoutée (socket.io-client était la seule — installée).
+
+Fichiers créés:
+- src/lib/types.ts
+- src/lib/api.ts
+- src/lib/store.ts
+- src/lib/ui.ts
+- src/hooks/use-pipeline-events.ts
+- src/components/ui/status-badge.tsx
+- src/components/ui/json-viewer.tsx
+- src/components/app-shell.tsx
+- src/components/sections/sidebar.tsx
+- src/components/sections/topbar.tsx
+- src/components/sections/states.tsx
+- src/components/sections/dashboard-section.tsx
+- src/components/sections/sequences-section.tsx
+- src/components/sections/corpus-section.tsx
+- src/components/sections/generations-section.tsx
+- src/components/sections/traces-section.tsx
+- src/components/sections/skills-section.tsx
+- src/components/sections/templates-section.tsx
+- src/components/sections/referentiel-section.tsx
+- src/app/providers.tsx
+- src/app/layout.tsx (réécrit)
+- src/app/page.tsx (réécrit)
+- src/app/globals.css (réécrit — palette emerald/teal)
+
+Sections les plus "lively":
+1. **Générations** (de loin) — le live pipeline view avec ses 5 stage pills animés (AnimatePresence), progress bars qui se remplissent, event stream qui défile en monospace, outcome badges qui apparaissent avec un spring, indicateur de connexion WS qui pulse, et le bouton Rocket qui lance tout ça. C'est l'expérience "wow" du produit.
+2. **Dashboard** — KPI cards avec icônes gradient, funnel animé (bars qui se remplissent en stagger), donut SVG avec segments animés, refresh auto toutes les 15s qui donne un sentiment "vivifiant" au tableau de bord.
+3. **Traces agents** — timeline verticale avec dots colorés par statut, expansion JSON collapsible, stats bar avec gradients — la densité de l'information rend la page très "pro dashboard".
+
+
+---
+Task ID: 4
+Agent: Main (Z.ai Code)
+Task: End-to-end verification with Agent Browser + final fixes
+
+Work Log:
+- Verified dev server running on port 3000, mini-service on ports 3003/3004
+- Agent Browser: opened /, no page errors, no hydration errors
+- Verified all 8 sections render: Dashboard (KPIs + funnel + donut + recent runs + livrables), Séquences (8 cards + filters + detail drawer with 4 tabs: Contexte/Livrable/Validation/Traces), Corpus (16 entries + exemplaire toggle + add dialog), Générations (launcher + live pipeline), Traces (timeline + stats), Skills (5 agent groups), Templates (v1 + expand), Référentiel (4 tabs)
+- GOLDEN PATH: launched batch "Géométrie 4e" via UI → WebSocket connected → live pipeline showed 5 stages progressing → completed in ~2min → dashboard refreshed: livrables 6→9, agentRuns 36→62, funnel 9/9/8/8 (1 sequence failed pedagogique layer = 2-layer critique working as designed)
+- Mobile responsiveness: hamburger menu opens sidebar as Sheet, all sections adapt
+- Fixed: stray "植物" Chinese chars in seed (ex_photo_1) → replaced with "végétal" + re-seeded + PATCHed live entry
+- Lint: `bun run lint` → EXIT 0, no errors
+- VLM final analysis: modern functional design, emerald/teal palette respected (NO blue/indigo), all dashboard elements visible, footer sticky at bottom with platform info
+
+Stage Summary:
+- Platform 100% functional end-to-end. 8 sections, 11 API routes, 6 pipeline files, 1 WebSocket mini-service, 12 skills versionnées, 8 notions, 16 corpus entries, 8 sequences (mixed statuses), 9 livrables, 62 agent_runs tracés.
+- The 5-stage pipeline (Planificateur → Knowledge Compiler → Rédacteur → Critique 2 couches → Superviseur) runs live with real LLM calls and graceful 429 fallback.
+- Architecture Élite v2 PDF fully implemented: §2 base de connaissances unique, §3 contrats Zod, §4 pipeline complet, §5 autonomie bornée, §6 skills versionnées, §7 modèle de données, §9 stack adaptée (LangGraph→orchestrateur TS, Pydantic→Zod, pgvector→TF-IDF, Redis→in-memory+WS, Jinja2→TS templates, FastAPI→Next.js API).
