@@ -6,6 +6,8 @@
 import { create } from 'zustand'
 import type { Section } from './types'
 
+export type TemplateStyle = 'congolais-bgp' | 'sesame-francais' | 'moderne'
+
 interface AppState {
   // Navigation SPA
   activeSection: Section
@@ -14,6 +16,10 @@ interface AppState {
   // Preset pour la génération (séquence préselectionnée depuis détail)
   generationPreset: { sequenceId?: string } | null
   setGenerationPreset: (p: { sequenceId?: string } | null) => void
+
+  // Template visuel sélectionné pour l'export
+  selectedTemplateStyle: TemplateStyle
+  setSelectedTemplateStyle: (t: TemplateStyle) => void
 
   // Batch actif (pour live indicator + auto reconnexion WS)
   activeBatchId: string | null
@@ -30,6 +36,9 @@ export const useStore = create<AppState>((set) => ({
 
   generationPreset: null,
   setGenerationPreset: (p) => set({ generationPreset: p }),
+
+  selectedTemplateStyle: 'congolais-bgp',
+  setSelectedTemplateStyle: (t) => set({ selectedTemplateStyle: t }),
 
   activeBatchId: null,
   setActiveBatchId: (id) => set({ activeBatchId: id }),

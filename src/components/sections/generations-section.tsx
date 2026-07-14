@@ -17,6 +17,10 @@ import {
   ListChecks,
   ArrowRight,
   Wand2,
+  FileText,
+  BookOpen,
+  Layout,
+  Download,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -35,7 +39,7 @@ import {
 import { AgentBadge, PhaseBadge, NiveauBadge } from '@/components/ui/status-badge'
 import { usePipelineEvents } from '@/hooks/use-pipeline-events'
 import { fetchBatch, fetchSequences, generatePipeline } from '@/lib/api'
-import { useStore } from '@/lib/store'
+import { useStore, type TemplateStyle } from '@/lib/store'
 import { agentLabel, formatDuration, formatTime, phaseColor } from '@/lib/ui'
 import { cn } from '@/lib/utils'
 import { LoadingState, ErrorState, EmptyState } from './states'
@@ -307,6 +311,9 @@ export function GenerationsSection() {
             />
           </div>
 
+          {/* Template visuel d'export */}
+          <TemplatePicker />
+
           <div className="flex justify-end">
             <Button
               onClick={() => launchMutation.mutate()}
@@ -481,6 +488,226 @@ function VersionPicker({
   )
 }
 
+// ============================================================
+// TemplatePicker — sélection du template visuel d'export
+// 3 templates : Congolais BGP, Fiche Sésame, Moderne
+// ============================================================
+const TEMPLATE_OPTIONS: Array<{
+  id: TemplateStyle
+  nom: string
+  description: string
+  icone: typeof FileText
+  couleur: string
+  bgColor: string
+  borderColor: string
+  apercu: { label: string; couleur: string }[]
+}> = [
+  {
+    id: 'congolais-bgp',
+    nom: 'Congolais BGP',
+    description: 'Modèle officiel congolais — 2 pages recto-verso, tableau 2 colonnes, en-tête FICHE N°/BRANCHE.',
+    icone: FileText,
+    couleur: 'text-emerald-700 dark:text-emerald-400',
+    bgColor: 'bg-emerald-50/60 dark:bg-emerald-950/30',
+    borderColor: 'border-emerald-500 ring-emerald-300 dark:border-emerald-500',
+    apercu: [
+      { label: 'I. Intro', couleur: 'bg-emerald-500' },
+      { label: 'II. Dév.', couleur: 'bg-emerald-400' },
+      { label: 'III. Synth.', couleur: 'bg-emerald-300' },
+      { label: 'IV. App.', couleur: 'bg-emerald-400' },
+      { label: 'V. Auto-éval', couleur: 'bg-emerald-500' },
+    ],
+  },
+  {
+    id: 'sesame-francais',
+    nom: 'Fiche Sésame',
+    description: 'Cours de français — 5 phases pédagogiques (Découverte, Compréhension, Structuration, Application, Évaluation).',
+    icone: BookOpen,
+    couleur: 'text-violet-700 dark:text-violet-400',
+    bgColor: 'bg-violet-50/60 dark:bg-violet-950/30',
+    borderColor: 'border-violet-500 ring-violet-300 dark:border-violet-500',
+    apercu: [
+      { label: 'Découverte', couleur: 'bg-violet-500' },
+      { label: 'Compréhension', couleur: 'bg-violet-400' },
+      { label: 'Structuration', couleur: 'bg-violet-300' },
+      { label: 'Application', couleur: 'bg-violet-400' },
+      { label: 'Évaluation', couleur: 'bg-violet-500' },
+    ],
+  },
+  {
+    id: 'moderne',
+    nom: 'Moderne Premium',
+    description: 'Design épuré premium — tags colorés, blocs structurés, typographie soignée.',
+    icone: Layout,
+    couleur: 'text-sky-700 dark:text-sky-400',
+    bgColor: 'bg-sky-50/60 dark:bg-sky-950/30',
+    borderColor: 'border-sky-500 ring-sky-300 dark:border-sky-500',
+    apercu: [
+      { label: 'Objectifs', couleur: 'bg-sky-500' },
+      { label: 'Déroulement', couleur: 'bg-sky-400' },
+      { label: 'Activités', couleur: 'bg-sky-300' },
+      { label: 'Évaluation', couleur: 'bg-sky-400' },
+    ],
+  },
+]
+
+function TemplatePicker() {
+  const { selectedTemplateStyle, setSelectedTemplateStyle } = useStore()
+
+  return (
+    <div className="space-y-2">
+      <Label className="text-xs text-muted-foreground">
+        Template visuel d'export
+        <span className="ml-2 text-[10px] text-muted-foreground/70">(appliqué au PDF généré)</span>
+      </Label>
+      <div className="grid gap-2 sm:grid-cols-3">
+        {TEMPLATE_OPTIONS.map((tpl) => {
+          const Icon = tpl.icone
+          const isSelected = selectedTemplateStyle === tpl.id
+          return (
+            <button
+              key={tpl.id}
+              type="button"
+              onClick={() => setSelectedTemplateStyle(tpl.id)}
+              className={cn(
+                'rounded-lg border p-3 text-left transition-all',
+                isSelected
+                  ? cn(tpl.borderColor, tpl.bgColor, 'ring-1')
+                  : 'border-border hover:border-muted-foreground/40',
+              )}
+            >
+              {/* Icône + nom */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <Icon className={cn('size-4', tpl.couleur)} />
+                  <span className={cn('text-xs font-semibold', tpl.couleur)}>{tpl.nom}</span>
+                </div>
+                {isSelected && <CheckCircle2 className={cn('size-3.5', tpl.couleur)} />}
+              </div>
+
+              {/* Aperçu visuel mini */}
+              <div className="mt-2 flex gap-0.5">
+                {tpl.apercu.map((a, i) => (
+                  <div
+                    key={i}
+                    className={cn('h-6 flex-1 rounded-sm', a.couleur, 'flex items-center justify-center')}
+                    title={a.label}
+                  >
+                    <span className="text-[7px] font-bold text-white opacity-80">{a.label.slice(0, 4)}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Description */}
+              <p className="mt-2 text-[10px] leading-tight text-muted-foreground">{tpl.description}</p>
+
+              {/* Badge 2 pages */}
+              <div className="mt-1.5 flex items-center gap-1">
+                <Badge variant="outline" className="border-muted-foreground/20 text-[9px] text-muted-foreground">
+                  2 pages recto-verso
+                </Badge>
+                <Badge variant="outline" className="border-muted-foreground/20 text-[9px] text-muted-foreground">
+                  QR traçabilité
+                </Badge>
+              </div>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// DownloadPDFButton — télécharge le livrable en PDF selon le template choisi
+// ============================================================
+function DownloadPDFButton({ livrableId }: { livrableId: string }) {
+  const { selectedTemplateStyle } = useStore()
+  const [downloading, setDownloading] = useState(false)
+
+  const handleDownload = async () => {
+    setDownloading(true)
+    try {
+      // 1. Récupérer le livrable + son contexte
+      const livResp = await fetch(`/api/livrables/${livrableId}`)
+      if (!livResp.ok) throw new Error('Livrable introuvable')
+      const liv = await livResp.json()
+
+      // 2. Récupérer le GenerationContext
+      const gcResp = await fetch(`/api/sequences/${liv.sequenceId}`)
+      if (!gcResp.ok) throw new Error('Séquence introuvable')
+      const seq = await gcResp.json()
+      const gc = seq.generationContext ? JSON.parse(seq.generationContext.payloadJson) : {}
+
+      // 3. Construire la fiche data pour l'export multi-template
+      const contenu = typeof liv.contenuJson === 'string' ? JSON.parse(liv.contenuJson) : liv.contenuJson
+      const sections = contenu.sections || []
+      const getSection = (id: string) => sections.find((s: any) => s.section_id === id)?.contenu || ''
+
+      const ficheData = {
+        fiche_numero: liv.id.slice(-4).toUpperCase(),
+        branche: gc.notions?.[0]?.chapitre || 'Mathématiques',
+        sujet_revision: gc.notions?.[0]?.niveau || '',
+        sujet_jour: seq.titre || liv.sequenceId,
+        objectifs: getSection('objectifs'),
+        competences: gc.notions?.[0]?.competences || [],
+        materiel: gc.contexte_classe?.materiel?.join(', ') || 'Tableau, craies',
+        ref_bgp: 'Élite v2 — BGP',
+        introduction: {
+          rappel: getSection('prerequis'),
+          motivation: 'Voir déroulement',
+          annonce: seq.titre || '',
+        },
+        developpement: getSection('deroulement'),
+        synthese: getSection('evaluation') || contenu.markdown?.slice(0, 200),
+        application: [getSection('activites')].filter(Boolean),
+        auto_evaluation: [getSection('prolongement')].filter(Boolean),
+        evaluation: getSection('evaluation'),
+        sequence_id: liv.sequenceId,
+      }
+
+      // 4. Appeler l'API export-multi
+      const resp = await fetch('/api/export-multi', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fiche: ficheData, templateStyle: selectedTemplateStyle, format: 'pdf' }),
+      })
+      if (!resp.ok) throw new Error('Export échec')
+
+      // 5. Télécharger le fichier
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `fiche_${selectedTemplateStyle}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      toast.success(`PDF téléchargé — template: ${selectedTemplateStyle}`)
+    } catch (e) {
+      toast.error(`Échec téléchargement: ${e instanceof Error ? e.message : 'erreur'}`)
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const tplLabel = selectedTemplateStyle === 'congolais-bgp' ? 'Congolais' : selectedTemplateStyle === 'sesame-francais' ? 'Sésame' : 'Moderne'
+
+  return (
+    <Button
+      size="sm"
+      variant="outline"
+      onClick={handleDownload}
+      disabled={downloading}
+      className="h-7 text-xs"
+    >
+      {downloading ? <Loader2 className="size-3 animate-spin" /> : <Download className="size-3" />}
+      PDF ({tplLabel})
+    </Button>
+  )
+}
+
 function SequencePipelineCard({ state }: { state: SequenceState }) {
   const { setSection, setGenerationPreset } = useStore()
   return (
@@ -552,7 +779,8 @@ function SequencePipelineCard({ state }: { state: SequenceState }) {
 
           {/* Action quand outcome validee */}
           {state.outcome === 'validee' && state.livrable_id && (
-            <div className="mt-3 flex justify-end">
+            <div className="mt-3 flex justify-end gap-2">
+              <DownloadPDFButton livrableId={state.livrable_id} />
               <Button
                 size="sm"
                 variant="ghost"
