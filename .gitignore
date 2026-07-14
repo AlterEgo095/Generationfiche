@@ -50,5 +50,24 @@ test
 prompt
 
 server.log
+
 # Skills directory
 /skills/
+
+# Database (local SQLite, environment-specific)
+/db/
+*.db
+*.db-journal
+
+# Screenshots (test artifacts)
+screenshot-*.png
+
+# Agent work logs (internal)
+/agent-ctx/
+
+# Uploaded source files (user input, not codebase)
+/upload/
+
+# Process ID files
+.zscripts/dev.pid
+*.pid
