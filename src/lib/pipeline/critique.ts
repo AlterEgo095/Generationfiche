@@ -233,9 +233,11 @@ ${ficheStr}`
 
     const parsed = parseCritiqueJSON(rawStr)
     const scores = parsed.scores || {}
-    // Complète les dimensions manquantes avec 4 (par défaut optimiste) si LLM a oublié
+    // P1-2 (Sprint 3) — FAIL-SAFE : dimensions manquantes notées 0 (pessimiste), pas 4 (optimiste).
+    // Avant : dimensions manquantes → 4/4 (faille optimiste, une fiche non évaluée passait)
+    // Après  : dimensions manquantes → 0/4 (fail-safe, la fiche est rejetée)
     for (const d of dimensions) {
-      if (typeof scores[d] !== 'number') scores[d] = 4
+      if (typeof scores[d] !== 'number' || Number.isNaN(scores[d])) scores[d] = 0
     }
     const allSufficient = dimensions.every((d) => Number(scores[d]) >= 3)
     const raisons = dimensions.map((d) => `${labelsDim[d]}: ${scores[d]}/4 — ${parsed.raisons?.[d] || ''}`)
@@ -258,21 +260,25 @@ ${ficheStr}`
     return result
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e)
-    // Fallback gracieux : on valide pédagogiquement OK (pas de blocage du pipeline par LLM)
+    // P1-2 (Sprint 3) — FAIL-SAFE : aucune fiche non évaluée ne doit être publiée.
+    // Avant : LLM KO → pedagogique_pass=true (fail-open, dangereux)
+    // Après  : LLM KO → pedagogique_pass=false (fail-safe, escalade humaine)
+    // Le pipeline fera un retry limité puis escaladera vers un humain.
     const result = {
       structurel_pass: true,
       structurel_raisons: [],
-      pedagogique_pass: true,
-      pedagogique_raisons: [`Évaluation pédagogique indisponible (LLM erreur: ${errMsg}). Validation automatique par défaut.`],
-      section_a_regenerer: null,
+      pedagogique_pass: false,
+      pedagogique_raisons: [`Validation pédagogique impossible : service critique indisponible (${errMsg}). Refus automatique par sécurité.`],
+      section_a_regenerer: 'deroulement', // section cible pour un éventuel retry
       couche_declenchee: 'pedagogique' as const,
-      scores: dimensions.reduce((acc, d) => ({ ...acc, [d]: 4 }), {}),
+      scores: dimensions.reduce((acc, d) => ({ ...acc, [d]: 0 }), {}),
       raw: '',
       duration_ms: Date.now() - start,
       ok: false,
+      error: errMsg,
     }
     // P0-1 : validation Zod du ValidationResult (base) avant retour
-    validateOrThrow(validateValidationResult(result), 'Critique.validatePedagogique(fallback)')
+    validateOrThrow(validateValidationResult(result), 'Critique.validatePedagogique(failsafe)')
     return result
   }
 }

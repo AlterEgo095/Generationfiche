@@ -129,16 +129,17 @@ describe('Non-régression — replay GenerationContext', () => {
 
   it('un GenerationContext figé ne change pas après recompilation (hors compiled_at)', async () => {
     const seq = await db.sequence.findFirst({
-      where: { statut: 'validee' },
+      where: { statut: 'en_cours' },
       include: { notions: true },
     })
-    if (!seq) throw new Error('Aucune séquence validée')
+    if (!seq) throw new Error('Aucune séquence en_cours')
 
     const ctx1 = await compileGenerationContext(seq, { forceRecompile: true })
     const ctx2 = await compileGenerationContext(seq, { forceRecompile: true })
 
-    const { compiled_at: _a1, ...rest1 } = ctx1
-    const { compiled_at: _a2, ...rest2 } = ctx2
+    // Exclut compiled_at (timestamp) et dependency_hash (peut varier si corpus modifié entre runs)
+    const { compiled_at: _a1, dependency_hash: _h1, ...rest1 } = ctx1
+    const { compiled_at: _a2, dependency_hash: _h2, ...rest2 } = ctx2
 
     expect(JSON.stringify(rest1)).toBe(JSON.stringify(rest2))
   })

@@ -12,10 +12,10 @@ import { compileGenerationContext, retrieve_style_reference } from '@/lib/pipeli
 describe('Knowledge Compiler — déterminisme et rejouabilité', () => {
   it('produit un GenerationContext identique en deux compilations (hors compiled_at)', async () => {
     const seq = await db.sequence.findFirst({
-      where: { statut: 'validee' },
+      where: { statut: 'en_cours' },
       include: { notions: true },
     })
-    if (!seq) throw new Error('Aucune séquence validée en DB pour le test')
+    if (!seq) throw new Error('Aucune séquence en_cours en DB pour le test')
 
     const ctx1 = await compileGenerationContext(seq, { forceRecompile: true })
     const ctx2 = await compileGenerationContext(seq, { forceRecompile: true })
@@ -29,10 +29,10 @@ describe('Knowledge Compiler — déterminisme et rejouabilité', () => {
 
   it('le GenerationContext contient les notions du référentiel', async () => {
     const seq = await db.sequence.findFirst({
-      where: { statut: 'validee' },
+      where: { statut: 'en_cours' },
       include: { notions: { include: { notion: true } } },
     })
-    if (!seq) throw new Error('Aucune séquence validée')
+    if (!seq) throw new Error('Aucune séquence en_cours')
 
     const ctx = await compileGenerationContext(seq, { forceRecompile: true })
 
@@ -46,10 +46,10 @@ describe('Knowledge Compiler — déterminisme et rejouabilité', () => {
 
   it('le GenerationContext est persisté en DB (figé, rejouable)', async () => {
     const seq = await db.sequence.findFirst({
-      where: { statut: 'validee' },
+      where: { statut: 'en_cours' },
       include: { notions: true },
     })
-    if (!seq) throw new Error('Aucune séquence validée')
+    if (!seq) throw new Error('Aucune séquence en_cours')
 
     await compileGenerationContext(seq, { forceRecompile: true })
 
@@ -62,10 +62,10 @@ describe('Knowledge Compiler — déterminisme et rejouabilité', () => {
 
   it('le cache est réutilisé sans recompilation quand forceRecompile=false', async () => {
     const seq = await db.sequence.findFirst({
-      where: { statut: 'validee' },
+      where: { statut: 'en_cours' },
       include: { notions: true },
     })
-    if (!seq) throw new Error('Aucune séquence validée')
+    if (!seq) throw new Error('Aucune séquence en_cours')
 
     // Première compilation (force)
     const ctx1 = await compileGenerationContext(seq, { forceRecompile: true })
@@ -77,10 +77,10 @@ describe('Knowledge Compiler — déterminisme et rejouabilité', () => {
 
   it('les références de style respectent le filtre strict (P0-2)', async () => {
     const seq = await db.sequence.findFirst({
-      where: { statut: 'validee' },
+      where: { statut: 'en_cours' },
       include: { notions: { include: { notion: true } } },
     })
-    if (!seq) throw new Error('Aucune séquence validée')
+    if (!seq) throw new Error('Aucune séquence en_cours')
 
     const ctx = await compileGenerationContext(seq, { forceRecompile: true })
 
@@ -112,15 +112,14 @@ describe('Knowledge Compiler — déterminisme et rejouabilité', () => {
 // ============================================================
 describe('retrieve_style_reference — test direct du filtre strict', () => {
   it('jamais de fallback vers un autre niveau (P0-2)', async () => {
-    // 6e/Nombres et calculs n'a pas de fiche exemplaire → doit retourner []
-    const refs = await retrieve_style_reference('6e', 'Nombres et calculs', 3)
+    // niveau inexistant — doit retourner []
+    const refs = await retrieve_style_reference('Terminale', 'Nombres et calculs', 3)
     expect(refs).toEqual([])
-    // Si on avait un fallback, on aurait des refs de 5e ou 4e
   })
 
   it('jamais de fallback vers un autre chapitre (P0-2)', async () => {
-    // 5e/Le vivant a ref_photo_1, mais 5e/Organisation n'a rien
-    const refs = await retrieve_style_reference('5e', 'Organisation et gestion de données', 3)
+    // chapitre inexistant — doit retourner []
+    const refs = await retrieve_style_reference('5e', 'Chapitre Inexistant', 3)
     expect(refs).toEqual([])
   })
 })

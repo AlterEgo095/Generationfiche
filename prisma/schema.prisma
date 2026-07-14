@@ -211,3 +211,30 @@ model FicheTemplate {
   active      Boolean  @default(true)
   createdAt   DateTime @default(now())
 }
+
+// ============================================================
+// EVENT OUTBOX — P1-3 (Sprint 3) : garantie de livraison WS
+// Pattern outbox : les events sont persistés en DB avant envoi.
+// Un worker les délivre au mini-service WS avec retry (1s/3s/10s, max 3).
+// Aucun event perdu, même si le WS est down au moment de l'emit.
+// ============================================================
+
+model EventOutbox {
+  id            String   @id @default(cuid())
+  batchId       String?
+  sequenceId    String?
+  agent         String
+  skill         String?
+  phase         String   // "start" | "progress" | "done" | "error" | "retry" | "escalade"
+  message       String
+  payload       String?  // JSON
+  status        String   @default("pending") // "pending" | "delivered" | "failed_delivery"
+  attempts      Int      @default(0)
+  maxAttempts   Int      @default(3)
+  nextRetryAt   DateTime @default(now())
+  createdAt     DateTime @default(now())
+  deliveredAt   DateTime?
+
+  @@index([status, nextRetryAt])
+  @@index([batchId])
+}

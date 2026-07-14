@@ -28,8 +28,14 @@ import type { BatchPlan, BatchPlanItem, RenderedDocument } from '@/lib/contracts
 
 const PIPELINE_WS_URL = 'http://127.0.0.1:3004/emit'
 
+// P1-3 (Sprint 3) — Outbox pattern : les events sont persistés en DB avant envoi.
+// Garantie : aucun event perdu, même si le WS est down au moment de l'emit.
+// Worker : retry avec backoff exponentiel (1s, 3s, 10s), max 3 tentatives.
+const BACKOFF_DELAYS_MS = [1000, 3000, 10000]
+
 // ============================================================
-// emitPipelineEvent — POST au mini-service WebSocket pour broadcast room
+// emitPipelineEvent — persiste l'event en DB (outbox) puis tente l'envoi WS
+// Si le WS est down, l'event reste en status="pending" et sera retry par le worker.
 // ============================================================
 async function emitPipelineEvent(
   batchId: string,
@@ -40,16 +46,120 @@ async function emitPipelineEvent(
     batch_id: batchId,
     timestamp: new Date().toISOString(),
   }
+
+  // 1. Persiste dans l'outbox (garantie de non-perte)
   try {
-    await fetch(PIPELINE_WS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ batch_id: batchId, event: payload }),
+    await db.eventOutbox.create({
+      data: {
+        batchId,
+        sequenceId: evt.sequence_id ?? null,
+        agent: evt.agent,
+        skill: evt.skill ?? null,
+        phase: evt.phase,
+        message: evt.message,
+        payload: evt.payload ? JSON.stringify(evt.payload) : null,
+        status: 'pending',
+        attempts: 0,
+        maxAttempts: 3,
+        nextRetryAt: new Date(),
+      },
     })
   } catch (e) {
-    // WS indisponible — on continue (pipeline ne doit pas crasher)
-    console.warn('[orchestrator] WS emit failed:', e instanceof Error ? e.message : e)
+    console.error('[orchestrator] Outbox persist failed:', e instanceof Error ? e.message : e)
   }
+
+  // 2. Tente l'envoi immédiat (best-effort, non bloquant)
+  attemptDeliverEvent(payload).catch(() => { /* le worker retry plus tard */ })
+}
+
+// ============================================================
+// attemptDeliverEvent — tente d'envoyer un event au WS
+// ============================================================
+async function attemptDeliverEvent(payload: PipelineEvent): Promise<void> {
+  try {
+    const resp = await fetch(PIPELINE_WS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch_id: payload.batch_id, event: payload }),
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!resp.ok) throw new Error(`WS returned ${resp.status}`)
+    // Marque comme délivré
+    await db.eventOutbox.updateMany({
+      where: { batchId: payload.batch_id, agent: payload.agent, phase: payload.phase, message: payload.message, status: 'pending' },
+      data: { status: 'delivered', deliveredAt: new Date() },
+    })
+  } catch (e) {
+    // Échec — le worker retry plus tard avec backoff
+  }
+}
+
+// ============================================================
+// processOutbox — worker qui délivre les events en attente
+// Appelé périodiquement par le mini-service ou l'API.
+// ============================================================
+export async function processOutbox(limit = 20): Promise<{ processed: number; delivered: number; failed: number }> {
+  const pending = await db.eventOutbox.findMany({
+    where: {
+      status: 'pending',
+      nextRetryAt: { lte: new Date() },
+    },
+    orderBy: { createdAt: 'asc' },
+    take: limit,
+  })
+
+  let delivered = 0
+  let failed = 0
+
+  for (const evt of pending) {
+    const attempts = evt.attempts + 1
+    const payload: PipelineEvent = {
+      batch_id: evt.batchId || '',
+      sequence_id: evt.sequenceId ?? undefined,
+      agent: evt.agent as PipelineEvent['agent'],
+      skill: evt.skill ?? undefined,
+      phase: evt.phase as PipelineEvent['phase'],
+      message: evt.message,
+      payload: evt.payload ? JSON.parse(evt.payload) : undefined,
+      timestamp: evt.createdAt.toISOString(),
+    }
+
+    try {
+      const resp = await fetch(PIPELINE_WS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_id: evt.batchId, event: payload }),
+        signal: AbortSignal.timeout(3000),
+      })
+      if (resp.ok) {
+        await db.eventOutbox.update({
+          where: { id: evt.id },
+          data: { status: 'delivered', attempts, deliveredAt: new Date() },
+        })
+        delivered++
+      } else {
+        throw new Error(`WS returned ${resp.status}`)
+      }
+    } catch {
+      if (attempts >= evt.maxAttempts) {
+        // Épuisement des retries — marquer comme failed_delivery
+        await db.eventOutbox.update({
+          where: { id: evt.id },
+          data: { status: 'failed_delivery', attempts },
+        })
+        failed++
+      } else {
+        // Retry avec backoff exponentiel
+        const delayMs = BACKOFF_DELAYS_MS[attempts - 1] ?? 10000
+        await db.eventOutbox.update({
+          where: { id: evt.id },
+          data: { attempts, nextRetryAt: new Date(Date.now() + delayMs) },
+        })
+      }
+    }
+  }
+
+  return { processed: pending.length, delivered, failed }
 }
 
 // ============================================================
@@ -177,58 +287,75 @@ export async function runPipeline(
 
   // -------------------------------------------------
   // Pour chaque séquence : 2 → 3 → 4 → 5
+  // P1-5 (Sprint 3) : PARALLÉLISATION avec concurrence limitée (MAX_CONCURRENT_GENERATION)
+  // Avant : for...of séquentiel (10 séquences = 10x le temps)
+  // Après  : pool de workers parallèles (max 3 simultanés) + rate limiter LLM
   // -------------------------------------------------
-  for (const item of plan.items) {
-    if (!item.ready) {
-      await emitPipelineEvent(plan.batch_id, {
-        sequence_id: item.sequence_id,
-        agent: 'planificateur',
-        skill: 'check_prerequisites_covered_v1',
-        phase: 'error',
-        message: `Séquence ${item.sequence_titre} ignorée (notions manquantes ou prérequis non couverts)`,
-      })
-      await persistAgentRun({
-        sequenceId: item.sequence_id,
-        batchId: plan.batch_id,
-        agent: 'planificateur',
-        skill: 'check_prerequisites_covered_v1',
-        input: { sequence_id: item.sequence_id },
-        output: { ready: false, prerequis_couverts: item.prerequis_couverts },
-        decision: 'fail',
-        durationMs: 0,
-        statut: 'warning',
-      })
-      continue
-    }
+  const MAX_CONCURRENT = parseInt(process.env.MAX_CONCURRENT_GENERATION || '3', 10)
+  const readyItems = plan.items.filter((item) => item.ready)
+  const skippedItems = plan.items.filter((item) => !item.ready)
 
-    try {
-      await processSequence({
-        batchId: plan.batch_id,
-        item,
-        skillVersion,
-        validateVersion,
-      })
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e)
-      await emitPipelineEvent(plan.batch_id, {
-        sequence_id: item.sequence_id,
-        agent: 'superviseur',
-        phase: 'error',
-        message: `Échec pipeline sur ${item.sequence_titre}: ${errMsg}`,
-      })
-      await persistAgentRun({
-        sequenceId: item.sequence_id,
-        batchId: plan.batch_id,
-        agent: 'superviseur',
-        input: { error: errMsg },
-        output: { crashed: true },
-        decision: 'fail',
-        durationMs: 0,
-        statut: 'error',
-      })
-    }
-    await delay(500)
+  // Traite les séquences ignorées (prerequis non couverts)
+  for (const item of skippedItems) {
+    await emitPipelineEvent(plan.batch_id, {
+      sequence_id: item.sequence_id,
+      agent: 'planificateur',
+      skill: 'check_prerequisites_covered_v1',
+      phase: 'error',
+      message: `Séquence ${item.sequence_titre} ignorée (notions manquantes ou prérequis non couverts)`,
+    })
+    await persistAgentRun({
+      sequenceId: item.sequence_id,
+      batchId: plan.batch_id,
+      agent: 'planificateur',
+      skill: 'check_prerequisites_covered_v1',
+      input: { sequence_id: item.sequence_id },
+      output: { ready: false, prerequis_couverts: item.prerequis_couverts },
+      decision: 'fail',
+      durationMs: 0,
+      statut: 'warning',
+    })
   }
+
+  // Traite les séquences prêtes en parallèle avec concurrence limitée
+  let activeWorkers = 0
+  let itemIndex = 0
+  const processNext = async (): Promise<void> => {
+    while (itemIndex < readyItems.length) {
+      const idx = itemIndex++
+      const item = readyItems[idx]
+      try {
+        await processSequence({
+          batchId: plan.batch_id,
+          item,
+          skillVersion,
+          validateVersion,
+        })
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e)
+        await emitPipelineEvent(plan.batch_id, {
+          sequence_id: item.sequence_id,
+          agent: 'superviseur',
+          phase: 'error',
+          message: `Échec pipeline sur ${item.sequence_titre}: ${errMsg}`,
+        })
+        await persistAgentRun({
+          sequenceId: item.sequence_id,
+          batchId: plan.batch_id,
+          agent: 'superviseur',
+          input: { error: errMsg },
+          output: { crashed: true },
+          decision: 'fail',
+          durationMs: 0,
+          statut: 'error',
+        })
+      }
+    }
+  }
+
+  // Lance MAX_CONCURRENT workers en parallèle
+  const workers = Array.from({ length: Math.min(MAX_CONCURRENT, readyItems.length) }, () => processNext())
+  await Promise.all(workers)
 
   // -------------------------------------------------
   // COMMIT BATCH

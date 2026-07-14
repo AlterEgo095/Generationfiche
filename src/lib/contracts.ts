@@ -42,6 +42,9 @@ export const GenerationContextSchema = z.object({
   template_version: z.string(),
   curriculum_version: z.string(),
   compiled_at: z.string(),
+  // P1-6 (Sprint 3) : hash des dépendances pour invalidation intelligente du cache.
+  // Optionnel pour compatibilité avec les contexts historiques.
+  dependency_hash: z.string().optional(),
 })
 export type GenerationContext = z.infer<typeof GenerationContextSchema>
 

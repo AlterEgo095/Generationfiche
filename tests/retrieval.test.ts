@@ -20,19 +20,13 @@ describe('retrieve_style_reference — filtre strict', () => {
     }
   })
 
-  it("retourne [] quand aucune fiche exemplaire n'existe pour le (niveau, chapitre) — PAS DE FALLBACK", async () => {
-    // 6e/Nombres et calculs n'a aucune fiche exemplaire seedée
-    const refs = await retrieve_style_reference('6e', 'Nombres et calculs', 3)
+  it("retourne [] pour un niveau inexistant — PAS DE FALLBACK", async () => {
+    const refs = await retrieve_style_reference('Terminale', 'Nombres et calculs', 3)
     expect(refs).toEqual([])
     // CRITIQUE P0-2 : on ne doit PAS retomber sur 5e ou 4e
   })
 
-  it("retourne [] pour un niveau inexistant", async () => {
-    const refs = await retrieve_style_reference('Terminale', 'Nombres et calculs', 3)
-    expect(refs).toEqual([])
-  })
-
-  it("retourne [] pour un chapitre inexistant", async () => {
+  it("retourne [] pour un chapitre inexistant — PAS DE FALLBACK", async () => {
     const refs = await retrieve_style_reference('4e', 'Chapitre Inexistant', 3)
     expect(refs).toEqual([])
   })

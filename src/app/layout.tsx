@@ -19,6 +19,12 @@ export const metadata: Metadata = {
     "Architecture Élite v2 — agents autonomes, savoir maîtrisé. Génération de séquences pédagogiques avec pipeline agentique en direct.",
   keywords: ["Élite", "pédagogie", "agents", "séquences", "LLM", "Next.js"],
   authors: [{ name: "Élite" }],
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Élite v2",
+  },
 };
 
 export default function RootLayout({

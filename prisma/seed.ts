@@ -384,7 +384,7 @@ async function main() {
   // =========================================================
   const allProgs = await db.progression.findMany({ include: { notion: true } })
   const statusBySemaine = (s: number): 'validee' | 'en_cours' | 'planifiee' | 'en_attente' => {
-    if (s <= 8) return 'validee'
+    if (s <= 8) return 'en_cours' // P1-1 (Sprint 3): les séquences seed ne sont pas réellement validées
     if (s <= 12) return 'en_cours'
     if (s <= 16) return 'planifiee'
     return 'en_attente'
@@ -399,7 +399,7 @@ async function main() {
         semaine: p.semaine,
         statut: statusBySemaine(p.semaine),
         priorite: p.semaine <= 12 ? 5 : p.semaine <= 16 ? 3 : 1,
-        contexteClasse: p.semaine <= 8 ? JSON.stringify({ effectif: 28, materiel: ['microscope', 'fiches'], duree_min: p.dureeMin }) : null,
+        contexteClasse: p.semaine <= 8 ? JSON.stringify({ effectif: 28, materiel: p.chapitre === 'Le vivant' ? ['microscope', 'lames', 'fiches'] : ['cahiers', 'calculatrices', 'fiches'], duree_min: p.dureeMin }) : null,
         templateVersion: 'v1',
         curriculumVersion: 'v1',
         progressionId: p.id,
@@ -408,37 +408,44 @@ async function main() {
     await db.sequenceNotion.create({ data: { sequenceId: seq.id, notionId: p.notionId } })
   }
 
-  // 2 séquences validées ont déjà un livrable + validation + agent_runs
-  const seqsValidees = await db.sequence.findMany({ where: { statut: 'validee' }, include: { notions: { include: { notion: true } } } })
-  for (const s of seqsValidees) {
+  // P1-1 (Sprint 3): Les livrables seed sont des PLACEHOLDERS, pas des fiches validées.
+  // Option B du prompt : placeholder=true (type='placeholder'), valide=false.
+  // Aucune donnée fictive ne doit apparaître comme production.
+  const seqsAvecPlaceholder = await db.sequence.findMany({ where: { statut: 'en_cours' }, include: { notions: { include: { notion: true } } }, take: 4 })
+  for (const s of seqsAvecPlaceholder) {
     const notion = s.notions[0]?.notion
     const contenu = {
-      objectifs: `À l'issue de la séquence, l'élève sera capable de ${notion?.objectifs ? JSON.parse(notion.objectifs)[0]?.toLowerCase() : 'manipuler la notion'}.`,
-      prerequis: `Prérequis mobilisés : ${notion?.competences ? JSON.parse(notion.competences)[0] : 'notions antérieures'}.`,
-      deroulement: `1. Activation des prérequis (10 min). 2. Activité d'introduction (15 min). 3. Institutionnalisation (15 min). 4. Exercices différenciés (10 min).`,
-      activites: `Activité principale : manipulation et conjecture. Activité secondaire : exercice d'application.`,
-      differentiation: `Groupes de besoin : atelier dirigé pour les élèves fragiles, tâche complexe pour les autres.`,
-      evaluation: `4 questions courtes + 1 problème ouvert. Critère de réussite : 3/4 questions justes.`,
-      prolongement: `Lien avec la notion suivante dans la progression.`,
+      markdown: `# PLACEHOLDER — ${s.titre}\n\n_Ce livrable est un placeholder de démonstration. Il ne contient pas de contenu pédagogique validé. Pour générer une vraie fiche, lancez le pipeline._`,
+      sections: [
+        { section_id: 'objectifs', label: 'Objectifs pédagogiques', contenu: '[Placeholder — à régénérer via le pipeline]', methode: null },
+        { section_id: 'prerequis', label: 'Prérequis mobilisés', contenu: '[Placeholder — à régénérer via le pipeline]', methode: null },
+        { section_id: 'deroulement', label: 'Déroulement', contenu: '[Placeholder — à régénérer via le pipeline]', methode: null },
+        { section_id: 'activites', label: 'Activités', contenu: '[Placeholder — à régénérer via le pipeline]', methode: null },
+        { section_id: 'differentiation', label: 'Différenciation', contenu: '[Placeholder — à régénérer via le pipeline]', methode: null },
+        { section_id: 'evaluation', label: 'Évaluation', contenu: '[Placeholder — à régénérer via le pipeline]', methode: null },
+        { section_id: 'prolongement', label: 'Prolongement', contenu: '[Placeholder — à régénérer via le pipeline]', methode: null },
+      ],
+      meta: { sequence_titre: s.titre, template_version: 'v1', curriculum_version: 'v1', notions_count: 1, exemples_count: 0, references_count: 0, placeholder: true },
     }
     const livrable = await db.livrable.create({
       data: {
         sequenceId: s.id,
-        type: 'fiche',
+        type: 'placeholder', // P1-1 (Sprint 3): explicit placeholder, pas 'fiche'
         contenuJson: JSON.stringify(contenu),
         format: 'markdown',
-        valide: true,
-        skillVersion: s.semaine <= 4 ? 'v1' : 'v2',
+        valide: false, // P1-1 (Sprint 3): JAMAIS valide sans validation réelle
+        skillVersion: 'v1',
       },
     })
+    // Validation honnête : structurel FAIL (contenu placeholder trop court)
     await db.validationResult.create({
       data: {
         livrableId: livrable.id,
-        structurelPass: true,
-        structurelRaisons: JSON.stringify(['Toutes les sections obligatoires présentes', 'Durées cohérentes', 'Champs remplis']),
-        pedagogiquePass: true,
-        pedagogiqueRaisons: JSON.stringify(['Clarté : 4/4', 'Cohérence de progression : 4/4', 'Pertinence des exemples : 4/4']),
-        coucheDeclenchee: 'pedagogique',
+        structurelPass: false,
+        structurelRaisons: JSON.stringify(['Livrable placeholder — contenu insuffisant', 'Toutes sections < seuil min mots']),
+        pedagogiquePass: null, // pas évalué pédagogiquement
+        pedagogiqueRaisons: null,
+        coucheDeclenchee: 'structurel',
         skillVersion: 'v1',
       },
     })
@@ -460,7 +467,7 @@ async function main() {
     }
   }
 
-  console.log(`✅ ${allProgs.length} séquences (statuts variés), ${seqsValidees.length} livrables validés avec traces`)
+  console.log(`✅ ${allProgs.length} séquences (statuts variés), ${seqsAvecPlaceholder.length} livrables placeholder (valide=false) avec traces`)
   console.log('🎉 Seed terminé')
 }
 

@@ -11,6 +11,39 @@ import { buildIndex } from '@/lib/retrieval'
 import { fetchCurriculumSpec } from './planificateur'
 import type { GenerationContext, StyleReference, CurriculumSpec } from '@/lib/contracts'
 import { validateGenerationContext, validateOrThrow } from '@/lib/validate'
+import * as crypto from 'crypto'
+
+// ============================================================
+// Cache intelligent — P1-6 (Sprint 3)
+// Hash des dépendances : template_version + curriculum_version + corpus_version
+// Si le hash change, le cache est invalidé (recompilation automatique).
+// ============================================================
+
+// Calcule le hash des dépendances d'un GenerationContext
+async function computeDependencyHash(
+  templateVersion: string,
+  curriculumVersion: string,
+): Promise<string> {
+  // Corpus version : basée sur le count + dernier updatedAt
+  const corpusCount = await db.corpusVectoriel.count()
+  const lastCorpusUpdate = await db.corpusVectoriel.findFirst({
+    orderBy: { updatedAt: 'desc' },
+    select: { updatedAt: true },
+  })
+  const corpusVersion = `${corpusCount}-${lastCorpusUpdate?.updatedAt?.getTime() ?? 0}`
+
+  // Template version : hash du template actif
+  const activeTemplate = await db.ficheTemplate.findFirst({
+    where: { active: true, version: templateVersion },
+    select: { id: true, structure: true },
+  })
+  const templateHash = activeTemplate
+    ? crypto.createHash('md5').update(activeTemplate.structure).digest('hex').slice(0, 8)
+    : 'none'
+
+  const composite = `${templateVersion}:${templateHash}|${curriculumVersion}|${corpusVersion}`
+  return crypto.createHash('sha256').update(composite).digest('hex').slice(0, 16)
+}
 
 // ============================================================
 // retrieve_pedagogical_examples — recherche TF-IDF large sur type='exemple_pedagogique'
@@ -116,14 +149,23 @@ export async function compileGenerationContext(
     throw new Error(`compileGenerationContext: sequence.notions doit être un tableau (reçu: ${typeof sequence.notions})`)
   }
 
-  // 1. Si déjà compilé et pas de forceRecompile → retourne le contexte existant
+  // 1. Cache intelligent — P1-6 (Sprint 3)
+  // Si déjà compilé ET le hash des dépendances n'a pas changé → retourne le contexte existant.
+  // Si le hash a changé (template, curriculum, corpus modifiés) → recompile automatiquement.
   if (!opts.forceRecompile) {
     const existing = await db.generationContext.findUnique({
       where: { sequenceId: sequence.id },
     })
     if (existing) {
       try {
-        return JSON.parse(existing.payloadJson) as GenerationContext
+        const cached = JSON.parse(existing.payloadJson) as GenerationContext & { dependency_hash?: string }
+        // Calcule le hash actuel et compare avec le hash enregistré
+        const currentHash = await computeDependencyHash(sequence.templateVersion, sequence.curriculumVersion)
+        if (cached.dependency_hash === currentHash) {
+          // Cache valide — retourne le contexte figé
+          return cached
+        }
+        // Cache invalide (dépendances modifiées) → recompile
       } catch {
         // payload corrompu → on recompile
       }
@@ -186,8 +228,12 @@ export async function compileGenerationContext(
     compiled_at: new Date().toISOString(),
   }
 
+  // P1-6 (Sprint 3) : calcule le hash des dépendances et l'ajoute au contexte
+  const dependencyHash = await computeDependencyHash(sequence.templateVersion, sequence.curriculumVersion)
+  const ctxWithHash = { ...ctx, dependency_hash: dependencyHash }
+
   // P0-1 : validation Zod avant persistance — aucun objet invalide ne doit entrer en DB
-  const validated = validateOrThrow(validateGenerationContext(ctx), 'KnowledgeCompiler.compileGenerationContext')
+  const validated = validateOrThrow(validateGenerationContext(ctxWithHash), 'KnowledgeCompiler.compileGenerationContext')
 
   // 8. Persiste en DB (upsert — un seul context par séquence)
   await db.generationContext.upsert({
