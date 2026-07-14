@@ -1,0 +1,25 @@
+{
+  "niveau": "5e secondaire",
+  "discipline": "Français",
+  "chapitre": "Les temps du passé",
+  "titre_lecon": "Le passé simple",
+  "duree": "60 min",
+  "objectifs": "À la fin de la leçon, les élèves seront capables d'identifier et d'utiliser correctement le passé simple pour des actions terminées dans le passé.",
+  "supports": [
+    "Tableau blanc",
+    "Fiche d'exercices",
+    "Texte littéraire"
+  ],
+  "prerequis": "Les élèves doivent maîtriser la conjugaison au présent et à l'imparfait.",
+  "decouverte": "Je commence par lire un extrait de roman utilisant le passé simple. Je demande aux élèves d'identifier les verbes qui semblent décrire des actions passées et terminées. Je les invite à comparer avec ce qu'ils connaissent déjà de l'imparfait.",
+  "comprehension": "Nous analysons ensemble les terminaisons du passé simple pour les trois groupes. Nous identifions les verbes irréguliers fréquents. Nous discutons de la différence de sens entre passé simple et imparfait.",
+  "structuration": "Je trace au tableau la formation du passé simple pour chaque groupe. Nous établissons une règle simple : passé simple pour actions ponctuelles, imparfait pour descriptions. Les élèves notent la trace écrite dans leur cahier.",
+  "application": [
+    "Conjuguer des verbes au passé simple",
+    "Transformer des phrases de l'imparfait au passé simple",
+    "Compléter un texte avec le passé simple ou l'imparfait"
+  ],
+  "evaluation": "Les élèves doivent conjuguer correctement au moins 80% des verbes proposés. Ils doivent être capables de justifier leur choix entre passé simple et imparfait dans un contexte donné.",
+  "prolongement": "Pour la prochaine séance, nous travaillerons sur l'alternance entre passé simple et imparfait dans des textes littéraires.",
+  "sequence_id": "sesame-demo"
+}
