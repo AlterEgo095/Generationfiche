@@ -19,6 +19,7 @@ import {
   type SectionContent,
 } from '@/lib/contracts'
 import { validateRenderedDocument, validateOrThrow } from '@/lib/validate'
+import { computePedagogicalScore, isPublishable, type PedagogicalScore } from '@/lib/quality-gate'
 
 // ============================================================
 // renderFiche — assemble les SectionContent[] en un RenderedDocument
@@ -97,12 +98,16 @@ export function renderFiche(
     },
   }
 
+  // P4-6 (Sprint 4) : Quality Gate pédagogique — bloque la publication si score < 80
+  const pedagogicalScore = computePedagogicalScore(sections, ctx)
+  const publishable = isPublishable(pedagogicalScore)
+
   const doc: RenderedDocument = {
     livrable_id: opts.livrable_id,
     sequence_id: ctx.sequence_id,
     format: 'markdown',
-    contenu_final,
-    valide: true,
+    contenu_final: { ...contenu_final, pedagogical_score: pedagogicalScore },
+    valide: publishable, // P4-6 : valide seulement si score >= 80
     skill_version: opts.skill_version,
   }
 

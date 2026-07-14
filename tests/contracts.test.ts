@@ -245,4 +245,57 @@ describe('BatchPlanSchema', () => {
     })
     expect(r.success).toBe(false)
   })
+
+  it('valide un batch plan avec total=0 (même si items vide)', () => {
+    const r = BatchPlanSchema.safeParse({
+      batch_id: 'b1', demande: 'x', items: [], total: 0,
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejette un CurriculumSpec avec niveau vide (undefined)', () => {
+    const r = CurriculumSpecSchema.safeParse({ ...validCurriculumSpec, niveau: undefined })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejette un CurriculumSpec avec chapitre vide (undefined)', () => {
+    const r = CurriculumSpecSchema.safeParse({ ...validCurriculumSpec, chapitre: undefined })
+    expect(r.success).toBe(false)
+  })
+
+  it('valide un CurriculumSpec avec prerequis_ids vide', () => {
+    const r = CurriculumSpecSchema.safeParse({ ...validCurriculumSpec, prerequis_ids: [] })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejette un SectionContent avec methode non-string (nombre)', () => {
+    const r = SectionContentSchema.safeParse({ ...validSectionContent, methode: 123 })
+    expect(r.success).toBe(false)
+  })
+
+  it('valide un ValidationResult avec section_a_regenerer null', () => {
+    const r = ValidationResultSchema.safeParse({
+      ...validValidationResult,
+      section_a_regenerer: null,
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejette un ValidationResult avec structurel_pass non-booléen', () => {
+    const r = ValidationResultSchema.safeParse({
+      ...validValidationResult,
+      structurel_pass: 'yes',
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('valide un RenderedDocument avec valide=false', () => {
+    const r = RenderedDocumentSchema.safeParse({ ...validRenderedDocument, valide: false })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejette un GenerationContext avec template_version undefined', () => {
+    const r = GenerationContextSchema.safeParse({ ...validGenerationContext, template_version: undefined })
+    expect(r.success).toBe(false)
+  })
 })

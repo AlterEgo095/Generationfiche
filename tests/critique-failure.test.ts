@@ -3,6 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { validatePedagogique } from '@/lib/pipeline/critique'
+import { llmRateLimiter } from '@/lib/llm-limiter'
 import type { GenerationContext, SectionContent } from '@/lib/contracts'
 import { FICHE_TEMPLATE_V1_SECTIONS } from '@/lib/contracts'
 
@@ -14,6 +15,12 @@ vi.mock('z-ai-web-dev-sdk', () => ({
 }))
 
 import ZAI from 'z-ai-web-dev-sdk'
+
+// Reset du rate limiter entre les tests (évite que le circuit breaker reste OPEN)
+beforeEach(() => {
+  vi.clearAllMocks()
+  llmRateLimiter.reset()
+})
 
 // ============================================================
 // Helpers
@@ -127,10 +134,11 @@ describe('Critique LLM Fail-Safe — Aucune validation automatique', () => {
   })
 
   it('traçabilité conservée : ok=false, error message, section_a_regenerer présent', async () => {
-    vi.mocked(ZAI.create).mockRejectedValueOnce(new Error('test error'))
+    vi.mocked(ZAI.create).mockRejectedValue(new Error('test error'))
     const result: any = await validatePedagogique(makeSections(), makeCtx(), 'v1')
     expect(result.ok).toBe(false)
-    expect(result.error).toBe('test error')
+    // L'erreur peut être 'test error' ou 'Circuit breaker OPEN' (après 3 erreurs consécutives)
+    expect(result.error).toMatch(/test error|Circuit breaker/)
     expect(result.section_a_regenerer).not.toBeNull()
     expect(result.couche_declenchee).toBe('pedagogique')
   })

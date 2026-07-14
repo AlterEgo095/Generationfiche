@@ -16,6 +16,8 @@ import ZAI from 'z-ai-web-dev-sdk'
 import { FICHE_TEMPLATE_V1_SECTIONS, SECTION_LABELS, type FicheSectionId } from '@/lib/contracts'
 import type { GenerationContext, SectionContent, ValidationResult } from '@/lib/contracts'
 import { validateValidationResult, validateOrThrow } from '@/lib/validate'
+import { llmRateLimiter } from '@/lib/llm-limiter'
+import { metrics } from '@/lib/metrics'
 
 // ============================================================
 // validateStructurel — TypeScript pur, aucune LLM
@@ -215,16 +217,19 @@ Réponds UNIQUEMENT avec le JSON, sans texte autour, sans code fences.`
 ${ficheStr}`
 
   try {
-    const zai = await ZAI.create()
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.2,
-      // @ts-expect-error - max_tokens accepté
-      max_tokens: 700,
-    })
+    // P4-2 (Sprint 4) : Rate limiting LLM — protège contre 429, queue FIFO, circuit breaker
+    const completion = await llmRateLimiter.execute(async () => {
+      const zai = await ZAI.create()
+      return zai.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.2,
+        // @ts-expect-error - max_tokens accepté
+        max_tokens: 700,
+      })
+    }, 3)
     const raw =
       completion?.choices?.[0]?.message?.content ??
       completion?.choices?.[0]?.delta?.content ??
@@ -257,9 +262,12 @@ ${ficheStr}`
     }
     // P0-1 : validation Zod du ValidationResult (base) avant retour
     validateOrThrow(validateValidationResult(result), 'Critique.validatePedagogique(success)')
+    metrics.recordLatency('critique_llm', Date.now() - start, { version })
+    metrics.incrementCounter('critique_llm_completed')
     return result
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e)
+    metrics.incrementCounter('critique_llm_failed')
     // P1-2 (Sprint 3) — FAIL-SAFE : aucune fiche non évaluée ne doit être publiée.
     // Avant : LLM KO → pedagogique_pass=true (fail-open, dangereux)
     // Après  : LLM KO → pedagogique_pass=false (fail-safe, escalade humaine)

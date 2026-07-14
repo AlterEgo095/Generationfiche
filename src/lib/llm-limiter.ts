@@ -104,6 +104,15 @@ export class LLMRateLimiter {
       consecutiveErrors: this.consecutiveErrors,
     }
   }
+
+  // Reset complet (pour tests)
+  reset(): void {
+    this.queue = []
+    this.active = 0
+    this.consecutiveErrors = 0
+    this.circuitState = 'CLOSED'
+    this.circuitOpenedAt = 0
+  }
 }
 
 // Singleton — partagé entre tous les agents LLM

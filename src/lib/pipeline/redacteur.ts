@@ -8,6 +8,8 @@ import ZAI from 'z-ai-web-dev-sdk'
 import type { GenerationContext, SectionContent, FicheSectionId } from '@/lib/contracts'
 import { SECTION_LABELS } from '@/lib/contracts'
 import { validateSectionContent, validateOrThrow } from '@/lib/validate'
+import { llmRateLimiter } from '@/lib/llm-limiter'
+import { metrics } from '@/lib/metrics'
 
 // ============================================================
 // Système prompt commun aux deux versions — embed le GenerationContext
@@ -216,24 +218,31 @@ export async function generateSectionPair(
   const userPrompt = buildUserPrompt(sectionId, ctx)
 
   try {
-    const zai = await ZAI.create()
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: version === 'v1' ? 0.4 : 0.6,
-      // @ts-expect-error - max_tokens est accepté par l'API
-      max_tokens: version === 'v1' ? 900 : 1100,
-    })
+    // P4-2 (Sprint 4) : Rate limiting LLM — protège contre 429, queue FIFO, circuit breaker
+    const completion = await llmRateLimiter.execute(async () => {
+      const zai = await ZAI.create()
+      return zai.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: version === 'v1' ? 0.4 : 0.6,
+        // @ts-expect-error - max_tokens est accepté par l'API
+        max_tokens: version === 'v1' ? 900 : 1100,
+      })
+    }, 3) // max 3 retries avec backoff 1s/2s/4s
     const raw =
       completion?.choices?.[0]?.message?.content ??
       completion?.choices?.[0]?.delta?.content ??
       (typeof completion === 'string' ? completion : '')
     const content = parseLLMResponse(sectionId, typeof raw === 'string' ? raw : JSON.stringify(raw))
-    return { content, raw: typeof raw === 'string' ? raw : JSON.stringify(raw), duration_ms: Date.now() - start, ok: true }
+    const duration = Date.now() - start
+    metrics.recordLatency('redacteur_llm', duration, { section_id: sectionId, version })
+    metrics.incrementCounter('redacteur_llm_completed')
+    return { content, raw: typeof raw === 'string' ? raw : JSON.stringify(raw), duration_ms: duration, ok: true }
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e)
+    metrics.incrementCounter('redacteur_llm_failed')
     // Fallback gracieux : contenu dégradé pour ne pas crasher le pipeline
     const degraded: SectionContent = {
       section_id: sectionId,
