@@ -10,6 +10,10 @@ import type { BatchPlan, BatchPlanItem, CurriculumSpec } from '@/lib/contracts'
 // fetchCurriculumSpec — charge la spec d'une notion depuis le référentiel
 // ============================================================
 export async function fetchCurriculumSpec(notionId: string): Promise<CurriculumSpec | null> {
+  // Guard P0-5 : validation des entrées
+  if (!notionId || typeof notionId !== 'string') {
+    throw new Error(`fetchCurriculumSpec: paramètre 'notionId' invalide (reçu: ${typeof notionId})`)
+  }
   const notion = await db.notion.findUnique({
     where: { id: notionId },
     include: { prerequisPour: true },
@@ -32,6 +36,10 @@ export async function fetchCurriculumSpec(notionId: string): Promise<CurriculumS
 // Couverture = présence en semaine antérieure (ne vérifie pas la validation du livrable).
 // ============================================================
 export async function checkPrerequisitesCovered(sequenceId: string): Promise<boolean> {
+  // Guard P0-5 : validation des entrées
+  if (!sequenceId || typeof sequenceId !== 'string') {
+    throw new Error(`checkPrerequisitesCovered: paramètre 'sequenceId' invalide (reçu: ${typeof sequenceId})`)
+  }
   const seq = await db.sequence.findUnique({
     where: { id: sequenceId },
     include: { notions: { include: { notion: { include: { prerequisPour: true } } } } },
@@ -71,6 +79,16 @@ export async function resolve_batch_plan(
   demande: string,
   opts: { max_par_batch?: number } = {},
 ): Promise<BatchPlan> {
+  // Guard P0-5 : validation des entrées
+  if (typeof demande !== 'string') {
+    throw new Error(`resolve_batch_plan: paramètre 'demande' doit être une string (reçu: ${typeof demande})`)
+  }
+  if (!demande || !demande.trim()) {
+    throw new Error('resolve_batch_plan: paramètre "demande" est vide')
+  }
+  if (opts.max_par_batch !== undefined && (!Number.isInteger(opts.max_par_batch) || opts.max_par_batch <= 0)) {
+    throw new Error(`resolve_batch_plan: max_par_batch doit être un entier positif (reçu: ${opts.max_par_batch})`)
+  }
   const max = opts.max_par_batch ?? 20
   const demandeLower = (demande || '').trim().toLowerCase()
 

@@ -1,5 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { z } from 'zod'
+
+// P0-1 : schéma Zod pour la création de séquence
+const createSequenceSchema = z.object({
+  titre: z.string().min(1).max(200),
+  niveau: z.enum(['6e', '5e', '4e', '3e', '2nde', '1ere', 'Term']),
+  chapitre: z.string().min(1).max(100),
+  semaine: z.number().int().min(1).max(52).optional(),
+  priorite: z.number().int().min(0).max(10).optional(),
+  notionIds: z.array(z.string().min(1)).min(1),
+  contexteClasse: z.record(z.string(), z.unknown()).optional(),
+  templateVersion: z.string().optional(),
+})
 
 // GET /api/sequences?statut=&niveau=&chapitre=
 export async function GET(req: NextRequest) {
@@ -66,11 +79,26 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { titre, niveau, chapitre, semaine, notionIds, priorite, contexteClasse, templateVersion } = body || {}
 
-    if (!titre || !niveau || !chapitre || !Array.isArray(notionIds) || notionIds.length === 0) {
+    // P0-1 : validation Zod du body
+    const parsed = createSequenceSchema.safeParse(body)
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'champs obligatoires: titre, niveau, chapitre, notionIds[]' },
+        { error: 'body invalide', issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) },
+        { status: 400 },
+      )
+    }
+    const { titre, niveau, chapitre, semaine, notionIds, priorite, contexteClasse, templateVersion } = parsed.data
+
+    // P0-1 : pré-validation des notionIds (existence en DB) — évite le 500 Prisma FK
+    const existingNotions = await db.notion.findMany({
+      where: { id: { in: notionIds } },
+      select: { id: true },
+    })
+    if (existingNotions.length !== notionIds.length) {
+      const missing = notionIds.filter((id) => !existingNotions.some((n) => n.id === id))
+      return NextResponse.json(
+        { error: `notionIds inexistants: ${missing.join(', ')}` },
         { status: 400 },
       )
     }

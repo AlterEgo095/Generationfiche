@@ -1,5 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { z } from 'zod'
+
+// P0-1 : schéma Zod pour la création d'entrée corpus
+const createCorpusSchema = z.object({
+  contenu: z.string().min(10).max(10000),
+  type: z.enum(['exemple_pedagogique', 'fiche_reference']),
+  niveau: z.enum(['6e', '5e', '4e', '3e', '2nde', '1ere', 'Term']),
+  chapitre: z.string().min(1).max(100),
+  notionId: z.string().optional(),
+  exemplaire: z.boolean().optional(),
+  statut: z.enum(['brouillon', 'validee']).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+})
 
 // GET /api/corpus?type=&niveau=&chapitre=&statut=&exemplaire=
 export async function GET(req: NextRequest) {
@@ -51,13 +64,17 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { contenu, type, niveau, chapitre, notionId, exemplaire, statut, metadata } = body || {}
-    if (!contenu || !type || !niveau || !chapitre) {
+
+    // P0-1 : validation Zod du body (type et statut en enum — plus d'injection)
+    const parsed = createCorpusSchema.safeParse(body)
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'champs obligatoires: contenu, type, niveau, chapitre' },
+        { error: 'body invalide', issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) },
         { status: 400 },
       )
     }
+    const { contenu, type, niveau, chapitre, notionId, exemplaire, statut, metadata } = parsed.data
+
     const created = await db.corpusVectoriel.create({
       data: {
         contenu,

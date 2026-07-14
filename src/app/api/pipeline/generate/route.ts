@@ -1,30 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
 import { resolve_batch_plan } from '@/lib/pipeline/planificateur'
 import { runPipeline } from '@/lib/pipeline/orchestrator'
 
+// P0-1 : schéma Zod pour le lancement de pipeline
+const generateSchema = z.object({
+  mode: z.enum(['single', 'batch']),
+  sequenceId: z.string().optional(),
+  demande: z.string().optional(),
+  skillVersion: z.enum(['v1', 'v2']),
+  validateVersion: z.enum(['v1', 'v2']),
+}).refine((d) => {
+  if (d.mode === 'single' && !d.sequenceId) return false
+  if (d.mode === 'batch' && !d.demande) return false
+  return true
+}, { message: 'sequenceId requis pour mode=single ; demande requise pour mode=batch' })
+
 // POST /api/pipeline/generate
-// Body: { mode: 'single'|'batch', sequenceId?, demande?, skillVersion: 'v1'|'v2', validateVersion: 'v1'|'v2' }
-//
-// APPROCHE : fire-and-forget — on résout SYNCHRONE le batch_plan (étape 1, rapide et déterministe)
-// pour renvoyer batch_id + items immédiatement (~100ms), puis on lance runPipeline en arrière-plan.
-// Le frontend suit en live via WebSocket (pipeline:event) et GET /api/pipeline/batch/[id].
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { mode, sequenceId, demande, skillVersion, validateVersion } = body || {}
 
-    if (mode !== 'single' && mode !== 'batch') {
-      return NextResponse.json({ error: "mode doit être 'single' ou 'batch'" }, { status: 400 })
+    // P0-1 : validation Zod du body (skillVersion/validateVersion en enum — plus de v999 silencieux)
+    const parsed = generateSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'body invalide', issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) },
+        { status: 400 },
+      )
     }
-    if (mode === 'single' && !sequenceId) {
-      return NextResponse.json({ error: 'sequenceId requis pour mode=single' }, { status: 400 })
-    }
-    if (mode === 'batch' && !demande) {
-      return NextResponse.json({ error: 'demande requise pour mode=batch' }, { status: 400 })
-    }
-
-    const sv = skillVersion === 'v2' ? 'v2' : 'v1'
-    const vv = validateVersion === 'v2' ? 'v2' : 'v1'
+    const { mode, sequenceId, demande, skillVersion: sv, validateVersion: vv } = parsed.data
 
     const started_at = new Date().toISOString()
 

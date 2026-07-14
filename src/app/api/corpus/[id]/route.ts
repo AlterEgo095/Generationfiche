@@ -1,17 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { z } from 'zod'
+
+// P0-1 : schéma Zod pour le PATCH corpus (statut en enum)
+const patchCorpusSchema = z.object({
+  statut: z.enum(['brouillon', 'validee']).optional(),
+  exemplaire: z.boolean().optional(),
+  contenu: z.string().min(10).max(10000).optional(),
+})
 
 // PATCH /api/corpus/[id]
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params
     const body = await req.json()
-    const { statut, exemplaire, contenu } = body || {}
 
+    // P0-1 : validation Zod du body
+    const parsed = patchCorpusSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'body invalide', issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) },
+        { status: 400 },
+      )
+    }
     const data: Record<string, unknown> = {}
-    if (typeof statut === 'string') data.statut = statut
-    if (typeof exemplaire === 'boolean') data.exemplaire = exemplaire
-    if (typeof contenu === 'string') data.contenu = contenu
+    if (parsed.data.statut !== undefined) data.statut = parsed.data.statut
+    if (parsed.data.exemplaire !== undefined) data.exemplaire = parsed.data.exemplaire
+    if (parsed.data.contenu !== undefined) data.contenu = parsed.data.contenu
 
     const updated = await db.corpusVectoriel.update({
       where: { id },

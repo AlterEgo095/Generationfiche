@@ -10,6 +10,7 @@ import { db } from '@/lib/db'
 import { buildIndex } from '@/lib/retrieval'
 import { fetchCurriculumSpec } from './planificateur'
 import type { GenerationContext, StyleReference, CurriculumSpec } from '@/lib/contracts'
+import { validateGenerationContext, validateOrThrow } from '@/lib/validate'
 
 // ============================================================
 // retrieve_pedagogical_examples — recherche TF-IDF large sur type='exemple_pedagogique'
@@ -19,6 +20,14 @@ export async function retrieve_pedagogical_examples(
   query: string,
   k = 5,
 ): Promise<Array<{ id: string; contenu: string; score: number }>> {
+  // Guard P0-5 : validation des entrées
+  if (!query || typeof query !== 'string') {
+    throw new Error(`retrieve_pedagogical_examples: paramètre 'query' invalide (reçu: ${typeof query})`)
+  }
+  if (!Number.isInteger(k) || k <= 0) {
+    throw new Error(`retrieve_pedagogical_examples: paramètre 'k' doit être un entier positif (reçu: ${k})`)
+  }
+
   const docs = await db.corpusVectoriel.findMany({
     where: { type: 'exemple_pedagogique' },
     select: { id: true, contenu: true },
@@ -31,15 +40,29 @@ export async function retrieve_pedagogical_examples(
 }
 
 // ============================================================
-// retrieve_style_reference — filtre strict :
+// retrieve_style_reference — filtre STRICT (baseline §2) :
 // type='fiche_reference' AND statut='validee' AND exemplaire=true AND niveau=X AND chapitre=Y
-// Tri par récence, top 3.
+// Tri par récence, top k.
+// AUCUN fallback. Aucune relaxation du filtre.
+// Si aucune fiche n'existe pour ce (niveau, chapitre), retourne [].
+// Le Rédacteur doit savoir travailler avec references_style = [].
 // ============================================================
 export async function retrieve_style_reference(
   niveau: string,
   chapitre: string,
   k = 3,
 ): Promise<StyleReference[]> {
+  // Guard P0-5 : validation des entrées
+  if (!niveau || typeof niveau !== 'string') {
+    throw new Error(`retrieve_style_reference: paramètre 'niveau' invalide (reçu: ${typeof niveau})`)
+  }
+  if (!chapitre || typeof chapitre !== 'string') {
+    throw new Error(`retrieve_style_reference: paramètre 'chapitre' invalide (reçu: ${typeof chapitre})`)
+  }
+  if (!Number.isInteger(k) || k <= 0) {
+    throw new Error(`retrieve_style_reference: paramètre 'k' doit être un entier positif (reçu: ${k})`)
+  }
+
   const fiches = await db.corpusVectoriel.findMany({
     where: {
       type: 'fiche_reference',
@@ -52,32 +75,12 @@ export async function retrieve_style_reference(
     take: k,
   })
 
-  // Fallback : si aucune fiche exemplaire pour ce (niveau, chapitre), on relaxe le filtre chapitre
-  let final = fiches
-  if (final.length === 0) {
-    final = await db.corpusVectoriel.findMany({
-      where: {
-        type: 'fiche_reference',
-        statut: 'validee',
-        exemplaire: true,
-        niveau,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: k,
-    })
-  }
-  // Fallback 2 : encore rien → on prend toutes les exemplaires tous niveaux confondus
-  if (final.length === 0) {
-    final = await db.corpusVectoriel.findMany({
-      where: { type: 'fiche_reference', statut: 'validee', exemplaire: true },
-      orderBy: { createdAt: 'desc' },
-      take: k,
-    })
-  }
-
-  return final.map((f) => ({
+  // PAS DE FALLBACK. Filtre strict respecté.
+  // Si [] → le Rédacteur reçoit references_style: [] et produit du contenu sans
+  // référence de style. Le prompt du Rédacteur gère déjà ce cas ("(aucune référence disponible)").
+  return fiches.map((f) => ({
     fiche_id: f.id,
-    extrait: f.contenu.slice(0, 1200), // extrait utilisable par le Rédacteur
+    extrait: f.contenu.slice(0, 1200),
     niveau: f.niveau,
     chapitre: f.chapitre,
   }))
@@ -102,6 +105,17 @@ export async function compileGenerationContext(
   },
   opts: { forceRecompile?: boolean } = {},
 ): Promise<GenerationContext> {
+  // Guard P0-5 : validation des entrées
+  if (!sequence || typeof sequence !== 'object') {
+    throw new Error('compileGenerationContext: paramètre "sequence" manquant ou invalide')
+  }
+  if (!sequence.id || typeof sequence.id !== 'string') {
+    throw new Error(`compileGenerationContext: sequence.id invalide (reçu: ${typeof sequence.id})`)
+  }
+  if (!sequence.notions || !Array.isArray(sequence.notions)) {
+    throw new Error(`compileGenerationContext: sequence.notions doit être un tableau (reçu: ${typeof sequence.notions})`)
+  }
+
   // 1. Si déjà compilé et pas de forceRecompile → retourne le contexte existant
   if (!opts.forceRecompile) {
     const existing = await db.generationContext.findUnique({
@@ -172,18 +186,21 @@ export async function compileGenerationContext(
     compiled_at: new Date().toISOString(),
   }
 
+  // P0-1 : validation Zod avant persistance — aucun objet invalide ne doit entrer en DB
+  const validated = validateOrThrow(validateGenerationContext(ctx), 'KnowledgeCompiler.compileGenerationContext')
+
   // 8. Persiste en DB (upsert — un seul context par séquence)
   await db.generationContext.upsert({
     where: { sequenceId: sequence.id },
     create: {
       sequenceId: sequence.id,
-      payloadJson: JSON.stringify(ctx),
+      payloadJson: JSON.stringify(validated),
     },
     update: {
-      payloadJson: JSON.stringify(ctx),
+      payloadJson: JSON.stringify(validated),
       compiledAt: new Date(),
     },
   })
 
-  return ctx
+  return validated
 }

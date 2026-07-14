@@ -15,6 +15,7 @@
 import ZAI from 'z-ai-web-dev-sdk'
 import { FICHE_TEMPLATE_V1_SECTIONS, SECTION_LABELS, type FicheSectionId } from '@/lib/contracts'
 import type { GenerationContext, SectionContent, ValidationResult } from '@/lib/contracts'
+import { validateValidationResult, validateOrThrow } from '@/lib/validate'
 
 // ============================================================
 // validateStructurel — TypeScript pur, aucune LLM
@@ -28,6 +29,17 @@ export function validateStructurel(
   sections: SectionContent[],
   ctx: GenerationContext,
 ): ValidationResult {
+  // Guard P0-5 : validation des entrées
+  if (!sections || !Array.isArray(sections)) {
+    throw new Error(`validateStructurel: paramètre 'sections' doit être un tableau (reçu: ${typeof sections})`)
+  }
+  if (!ctx || typeof ctx !== 'object') {
+    throw new Error('validateStructurel: paramètre "ctx" (GenerationContext) manquant ou invalide')
+  }
+  if (!ctx.notions || !Array.isArray(ctx.notions)) {
+    throw new Error('validateStructurel: ctx.notions invalide')
+  }
+
   const raisons: string[] = []
   const sectionsById = new Map<string, SectionContent>()
   for (const s of sections) sectionsById.set(s.section_id, s)
@@ -99,10 +111,11 @@ export function validateStructurel(
 
   const pass = raisons.length === 0
   // Si fail, on identifie une section_a_regenerer (la première section en défaut)
+  // On cherche les raisons qui mentionnent un section_id — soit "Section "sid"" soit "manquante : "sid""
   let section_a_regenerer: string | null = null
   if (!pass) {
     for (const sid of FICHE_TEMPLATE_V1_SECTIONS) {
-      if (raisons.some((r) => r.startsWith(`Section "${sid}"`))) {
+      if (raisons.some((r) => r.includes(`"${sid}"`))) {
         section_a_regenerer = sid
         break
       }
@@ -110,7 +123,7 @@ export function validateStructurel(
     if (!section_a_regenerer) section_a_regenerer = 'deroulement'
   }
 
-  return {
+  const result: ValidationResult = {
     structurel_pass: pass,
     structurel_raisons: raisons,
     pedagogique_pass: null,
@@ -118,6 +131,9 @@ export function validateStructurel(
     section_a_regenerer: pass ? null : section_a_regenerer,
     couche_declenchee: 'structurel',
   }
+
+  // P0-1 : validation Zod du ValidationResult avant retour
+  return validateOrThrow(validateValidationResult(result), 'Critique.validateStructurel')
 }
 
 // ============================================================
@@ -131,6 +147,17 @@ export async function validatePedagogique(
   ctx: GenerationContext,
   version: 'v1' | 'v2' = 'v1',
 ): Promise<ValidationResult & { scores?: Record<string, number>; raw?: string; duration_ms?: number; ok?: boolean }> {
+  // Guard P0-5 : validation des entrées
+  if (!sections || !Array.isArray(sections)) {
+    throw new Error(`validatePedagogique: paramètre 'sections' doit être un tableau (reçu: ${typeof sections})`)
+  }
+  if (!ctx || typeof ctx !== 'object') {
+    throw new Error('validatePedagogique: paramètre "ctx" (GenerationContext) manquant ou invalide')
+  }
+  if (version !== 'v1' && version !== 'v2') {
+    throw new Error(`validatePedagogique: version doit être "v1" ou "v2" (reçu: "${version}")`)
+  }
+
   const start = Date.now()
 
   // Détermine si on active la dimension contexte_classe (v2 + contexte présent)
@@ -214,33 +241,39 @@ ${ficheStr}`
     const raisons = dimensions.map((d) => `${labelsDim[d]}: ${scores[d]}/4 — ${parsed.raisons?.[d] || ''}`)
     const section_a_regenerer = allSufficient ? null : (parsed.section_a_regenerer ?? 'deroulement')
 
-    return {
+    const result = {
       structurel_pass: true, // structurel déjà PASS quand on appelle pedagogique
       structurel_raisons: [],
       pedagogique_pass: allSufficient,
       pedagogique_raisons: raisons,
       section_a_regenerer,
-      couche_declenchee: 'pedagogique',
+      couche_declenchee: 'pedagogique' as const,
       scores,
       raw: rawStr,
       duration_ms: Date.now() - start,
       ok: true,
     }
+    // P0-1 : validation Zod du ValidationResult (base) avant retour
+    validateOrThrow(validateValidationResult(result), 'Critique.validatePedagogique(success)')
+    return result
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e)
     // Fallback gracieux : on valide pédagogiquement OK (pas de blocage du pipeline par LLM)
-    return {
+    const result = {
       structurel_pass: true,
       structurel_raisons: [],
       pedagogique_pass: true,
       pedagogique_raisons: [`Évaluation pédagogique indisponible (LLM erreur: ${errMsg}). Validation automatique par défaut.`],
       section_a_regenerer: null,
-      couche_declenchee: 'pedagogique',
+      couche_declenchee: 'pedagogique' as const,
       scores: dimensions.reduce((acc, d) => ({ ...acc, [d]: 4 }), {}),
       raw: '',
       duration_ms: Date.now() - start,
       ok: false,
     }
+    // P0-1 : validation Zod du ValidationResult (base) avant retour
+    validateOrThrow(validateValidationResult(result), 'Critique.validatePedagogique(fallback)')
+    return result
   }
 }
 

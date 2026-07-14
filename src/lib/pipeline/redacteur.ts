@@ -7,6 +7,7 @@
 import ZAI from 'z-ai-web-dev-sdk'
 import type { GenerationContext, SectionContent, FicheSectionId } from '@/lib/contracts'
 import { SECTION_LABELS } from '@/lib/contracts'
+import { validateSectionContent, validateOrThrow } from '@/lib/validate'
 
 // ============================================================
 // Système prompt commun aux deux versions — embed le GenerationContext
@@ -117,16 +118,19 @@ Réponds avec le JSON imposé.`
 
 // ============================================================
 // parseLLMResponse — extrait le JSON de la sortie LLM, fallback texte
+// P0-1 : validation Zod du SectionContent produit avant de le retourner
 // ============================================================
 function parseLLMResponse(
   sectionId: string,
   raw: string,
 ): SectionContent {
+  let candidate: SectionContent | null = null
+
   // 1. Tentative : JSON direct
   try {
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed.contenu === 'string') {
-      return {
+      candidate = {
         section_id: parsed.section_id || sectionId,
         contenu: parsed.contenu,
         methode: parsed.methode ?? null,
@@ -136,43 +140,52 @@ function parseLLMResponse(
     // pass
   }
   // 2. Tentative : JSON dans code fence
-  const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]+?)```/i)
-  if (fenceMatch) {
-    try {
-      const parsed = JSON.parse(fenceMatch[1])
-      if (parsed && typeof parsed.contenu === 'string') {
-        return {
-          section_id: parsed.section_id || sectionId,
-          contenu: parsed.contenu,
-          methode: parsed.methode ?? null,
+  if (!candidate) {
+    const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]+?)```/i)
+    if (fenceMatch) {
+      try {
+        const parsed = JSON.parse(fenceMatch[1])
+        if (parsed && typeof parsed.contenu === 'string') {
+          candidate = {
+            section_id: parsed.section_id || sectionId,
+            contenu: parsed.contenu,
+            methode: parsed.methode ?? null,
+          }
         }
+      } catch {
+        // pass
       }
-    } catch {
-      // pass
     }
   }
   // 3. Tentative : extraire un objet { ... }
-  const objMatch = raw.match(/\{[\s\S]*\}/)
-  if (objMatch) {
-    try {
-      const parsed = JSON.parse(objMatch[0])
-      if (parsed && typeof parsed.contenu === 'string') {
-        return {
-          section_id: parsed.section_id || sectionId,
-          contenu: parsed.contenu,
-          methode: parsed.methode ?? null,
+  if (!candidate) {
+    const objMatch = raw.match(/\{[\s\S]*\}/)
+    if (objMatch) {
+      try {
+        const parsed = JSON.parse(objMatch[0])
+        if (parsed && typeof parsed.contenu === 'string') {
+          candidate = {
+            section_id: parsed.section_id || sectionId,
+            contenu: parsed.contenu,
+            methode: parsed.methode ?? null,
+          }
         }
+      } catch {
+        // pass
       }
-    } catch {
-      // pass
     }
   }
   // 4. Fallback : texte brut → on prend tout comme contenu
-  return {
-    section_id: sectionId,
-    contenu: raw.trim(),
-    methode: null,
+  if (!candidate) {
+    candidate = {
+      section_id: sectionId,
+      contenu: raw.trim(),
+      methode: null,
+    }
   }
+
+  // P0-1 : validation Zod avant retour — garantit le contrat SectionContent
+  return validateOrThrow(validateSectionContent(candidate), `Rédacteur.parseLLMResponse(${sectionId})`)
 }
 
 // ============================================================
@@ -184,6 +197,20 @@ export async function generateSectionPair(
   ctx: GenerationContext,
   version: 'v1' | 'v2' = 'v1',
 ): Promise<{ content: SectionContent; raw: string; duration_ms: number; ok: boolean; error?: string }> {
+  // Guard P0-5 : validation des entrées
+  if (!sectionId || typeof sectionId !== 'string') {
+    throw new Error(`generateSectionPair: paramètre 'sectionId' invalide (reçu: ${typeof sectionId})`)
+  }
+  if (!ctx || typeof ctx !== 'object') {
+    throw new Error('generateSectionPair: paramètre "ctx" (GenerationContext) manquant ou invalide')
+  }
+  if (!ctx.notions || !Array.isArray(ctx.notions) || ctx.notions.length === 0) {
+    throw new Error('generateSectionPair: ctx.notions est vide ou invalide — le Rédacteur ne peut pas générer sans notion à couvrir')
+  }
+  if (version !== 'v1' && version !== 'v2') {
+    throw new Error(`generateSectionPair: version doit être "v1" ou "v2" (reçu: "${version}")`)
+  }
+
   const start = Date.now()
   const systemPrompt = buildSystemPrompt(ctx, version)
   const userPrompt = buildUserPrompt(sectionId, ctx)

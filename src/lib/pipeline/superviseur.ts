@@ -18,6 +18,7 @@ import {
   type RenderedDocument,
   type SectionContent,
 } from '@/lib/contracts'
+import { validateRenderedDocument, validateOrThrow } from '@/lib/validate'
 
 // ============================================================
 // renderFiche — assemble les SectionContent[] en un RenderedDocument
@@ -28,6 +29,20 @@ export function renderFiche(
   ctx: GenerationContext,
   opts: { livrable_id: string; skill_version: string },
 ): RenderedDocument {
+  // Guard P0-5 : validation des entrées
+  if (!sections || !Array.isArray(sections)) {
+    throw new Error(`renderFiche: paramètre 'sections' doit être un tableau (reçu: ${typeof sections})`)
+  }
+  if (!ctx || typeof ctx !== 'object') {
+    throw new Error('renderFiche: paramètre "ctx" (GenerationContext) manquant ou invalide')
+  }
+  if (!opts || !opts.livrable_id || typeof opts.livrable_id !== 'string') {
+    throw new Error('renderFiche: opts.livrable_id invalide')
+  }
+  if (!opts.skill_version || typeof opts.skill_version !== 'string') {
+    throw new Error('renderFiche: opts.skill_version invalide')
+  }
+
   const sectionsById = new Map<string, SectionContent>()
   for (const s of sections) sectionsById.set(s.section_id, s)
 
@@ -82,7 +97,7 @@ export function renderFiche(
     },
   }
 
-  return {
+  const doc: RenderedDocument = {
     livrable_id: opts.livrable_id,
     sequence_id: ctx.sequence_id,
     format: 'markdown',
@@ -90,6 +105,9 @@ export function renderFiche(
     valide: true,
     skill_version: opts.skill_version,
   }
+
+  // P0-1 : validation Zod du RenderedDocument avant retour (et avant commit DB)
+  return validateOrThrow(validateRenderedDocument(doc), 'Superviseur.renderFiche')
 }
 
 // ============================================================
@@ -97,6 +115,16 @@ export function renderFiche(
 // (markdown natif ; HTML simple ; PDF = HTML enveloppé pour aperçu)
 // ============================================================
 export function exportRender(rendered: RenderedDocument, format: 'markdown' | 'html' = 'markdown'): string {
+  // Guard P0-5 : validation des entrées
+  if (!rendered || typeof rendered !== 'object') {
+    throw new Error('exportRender: paramètre "rendered" manquant ou invalide')
+  }
+  if (!rendered.contenu_final || typeof rendered.contenu_final !== 'object') {
+    throw new Error('exportRender: rendered.contenu_final invalide')
+  }
+  if (format !== 'markdown' && format !== 'html') {
+    throw new Error(`exportRender: format doit être "markdown" ou "html" (reçu: "${format}")`)
+  }
   if (format === 'markdown') {
     return rendered.contenu_final.markdown as string
   }
@@ -138,6 +166,11 @@ export async function commitBatch(batchId: string): Promise<{
   escalated: number
   items: Array<{ sequence_id: string; livrable_id?: string; statut: string }>
 }> {
+  // Guard P0-5 : validation des entrées
+  if (!batchId || typeof batchId !== 'string') {
+    throw new Error(`commitBatch: paramètre 'batchId' invalide (reçu: ${typeof batchId})`)
+  }
+
   // Récupère tous les agent_runs du batch, groupés par séquence
   const runs = await db.agentRun.findMany({
     where: { batchId },
