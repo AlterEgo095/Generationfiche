@@ -201,3 +201,24 @@ Stage Summary:
 - Platform 100% functional end-to-end. 8 sections, 11 API routes, 6 pipeline files, 1 WebSocket mini-service, 12 skills versionnées, 8 notions, 16 corpus entries, 8 sequences (mixed statuses), 9 livrables, 62 agent_runs tracés.
 - The 5-stage pipeline (Planificateur → Knowledge Compiler → Rédacteur → Critique 2 couches → Superviseur) runs live with real LLM calls and graceful 429 fallback.
 - Architecture Élite v2 PDF fully implemented: §2 base de connaissances unique, §3 contrats Zod, §4 pipeline complet, §5 autonomie bornée, §6 skills versionnées, §7 modèle de données, §9 stack adaptée (LangGraph→orchestrateur TS, Pydantic→Zod, pgvector→TF-IDF, Redis→in-memory+WS, Jinja2→TS templates, FastAPI→Next.js API).
+
+---
+Task ID: 5
+Agent: Main (Z.ai Code)
+Task: Push all code to GitHub private repo (AlterEgo095/Generationfiche) + add README + ensure clone-anywhere reproducibility
+
+Work Log:
+- Cleaned git tracking: removed .env, db/custom.db, 16 screenshots, agent-ctx/, upload/, .pid files
+- Updated .gitignore: added !.env.example exception, /db/, *.db, screenshot-*.png, /agent-ctx/, /upload/, *.pid
+- Added .env.example with DATABASE_URL (single env var needed)
+- Added package.json scripts: setup (full install), db:seed, db:setup, mini-service
+- Created comprehensive README.md (538 lines): vision, architecture diagram, stack mapping, install guide, project structure, 5-stage pipeline detail, agents table, skills versioning, KB access patterns, API reference, WebSocket docs, UI sections, seed data, scripts table, roadmap
+- Pushed all to https://github.com/AlterEgo095/Generationfiche.git (private, main branch)
+- Security: token used only for one-time push, NOT saved to git config (verified empty)
+- Verified via GitHub API: 128 files on remote, README.md present, .env.example present, latest commit d0bb60f
+
+Stage Summary:
+- Repo fully reproducible: clone → cp .env.example .env → bun run setup → bun run dev + bun run mini-service
+- 128 files tracked (all source code, no secrets/binaries/test artifacts)
+- README covers everything: architecture, stack, API, WebSocket, UI, scripts, roadmap
+- GitHub repo: https://github.com/AlterEgo095/Generationfiche (private, 4 commits)
