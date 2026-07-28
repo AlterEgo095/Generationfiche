@@ -7,19 +7,27 @@ import { db } from '@/lib/db'
 async function main() {
   console.log('🌱 Seed — Architecture Élite v2')
 
-  // Reset (ordre FK-safe)
-  await db.validationResult.deleteMany()
-  await db.livrable.deleteMany()
-  await db.generationContext.deleteMany()
-  await db.agentRun.deleteMany()
-  await db.sequenceNotion.deleteMany()
-  await db.sequence.deleteMany()
-  await db.progression.deleteMany()
-  await db.prerequis.deleteMany()
-  await db.corpusVectoriel.deleteMany()
-  await db.regle.deleteMany()
-  await db.notion.deleteMany()
-  await db.ficheTemplate.deleteMany()
+  // Reset (ordre FK-safe) — seulement si PAS --preserve
+  const preserveHistory = process.argv.includes('--preserve')
+  if (!preserveHistory) {
+    console.log('⚠️  Reset complet de la base (utilisez --preserve pour conserver l\'historique)')
+    await db.validationResult.deleteMany()
+    await db.livrable.deleteMany()
+    await db.generationContext.deleteMany()
+    await db.agentRun.deleteMany()
+    await db.sequenceNotion.deleteMany()
+    await db.sequence.deleteMany()
+    await db.progression.deleteMany()
+    await db.prerequis.deleteMany()
+    await db.corpusVectoriel.deleteMany()
+    await db.regle.deleteMany()
+    await db.notion.deleteMany()
+    await db.ficheTemplate.deleteMany()
+  } else {
+    console.log('🔒 Mode --preserve : historique des livrables/séquences/agent_runs conservé')
+    // On ne supprime QUE les données de référentiel (notions, règles, templates)
+    // en utilisant upsert (ne crée que si inexistant)
+  }
 
   // =========================================================
   // Fiche template v1
@@ -126,9 +134,18 @@ async function main() {
   ]
 
   for (const n of notions) {
-    await db.notion.create({
-      data: {
+    await db.notion.upsert({
+      where: { id: n.id },
+      create: {
         id: n.id,
+        nom: n.nom,
+        description: n.description,
+        niveau: n.niveau,
+        chapitre: n.chapitre,
+        competences: JSON.stringify(n.competences),
+        objectifs: JSON.stringify(n.objectifs),
+      },
+      update: {
         nom: n.nom,
         description: n.description,
         niveau: n.niveau,

@@ -14,6 +14,35 @@ datasource db {
 // RÉFÉRENTIEL STRUCTUREL — la matière première, jamais générée
 // ============================================================
 
+// Branche = discipline enseignée (Mathématiques, Français, etc.)
+model Branche {
+  id          String   @id @default(cuid())
+  nom         String   @unique // "Mathématiques", "Français", "Histoire", etc.
+  code        String   @unique // "MATH", "FR", "HIST", "GEO", "PHY", "SVT"
+  description String?
+  couleur     String   @default("#0F766E") // pour l'affichage UI
+  createdAt   DateTime @default(now())
+
+  programmes     ProgrammeNational[]
+  progressions   Progression[]
+}
+
+// Programme national = programme officiel par pays/niveau/branche
+model ProgrammeNational {
+  id          String   @id @default(cuid())
+  pays        String   @default("RDC") // République Démocratique du Congo
+  niveau      String   // "6e", "5e", "4e", "3e", "2nde", "1ere", "Term"
+  brancheId   String
+  branche     Branche  @relation(fields: [brancheId], references: [id])
+  chapitre    String   // "Nombres et calculs", "Géométrie", etc.
+  description String?
+  heuresAnnee Int      @default(50) // nombre d'heures prévues dans l'année
+  createdAt   DateTime @default(now())
+
+  @@unique([pays, niveau, brancheId, chapitre])
+  @@index([pays, niveau])
+}
+
 model Notion {
   id          String   @id @default(cuid())
   nom         String
@@ -44,16 +73,20 @@ model Prerequis {
 }
 
 model Progression {
-  id        String  @id @default(cuid())
-  niveau    String
-  chapitre  String
-  notionId  String
-  semaine   Int     // ordre chronologique dans l'année
-  dureeMin  Int     @default(50) // durée indicative en minutes
-  notion    Notion  @relation(fields: [notionId], references: [id])
-  sequence  Sequence?
+  id         String   @id @default(cuid())
+  niveau     String
+  chapitre   String
+  notionId   String
+  semaine    Int      // ordre chronologique dans l'année
+  dureeMin   Int      @default(50) // durée indicative en minutes
+  brancheId  String?  // lien optionnel vers la branche (pour prévision par discipline)
+  branche    Branche? @relation(fields: [brancheId], references: [id])
+  notion     Notion   @relation(fields: [notionId], references: [id])
+  sequence   Sequence?
 
   @@unique([niveau, chapitre, notionId])
+  @@index([niveau, semaine])
+  @@index([brancheId, niveau])
 }
 
 model Regle {
