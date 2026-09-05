@@ -16,6 +16,9 @@ import {
   type ISectionOptions,
 } from 'docx'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
+import fontkit from '@pdf-lib/fontkit'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
   FICHE_TEMPLATE_V1_SECTIONS,
   SECTION_LABELS,
@@ -199,6 +202,66 @@ export async function docxExport(rendered: RenderedDocument): Promise<Buffer> {
 }
 
 // ============================================================
+// F-46 fix : les StandardFonts PDF (Helvetica) utilisent l'encodage WinAnsi
+// qui ne couvre PAS les symboles mathématiques (√ ≤ ≥ π → …) omniprésents
+// dans les fiches — l'export PDF plantait en HTTP 500.
+// Correctif : embarquement d'une police Unicode (DejaVu Sans, licence libre
+// Bitstream Vera) livrée dans public/fonts/. Fallback : StandardFonts +
+// translittération défensive (jamais de crash d'export).
+// ============================================================
+
+/**
+ * Tente d'embarquer DejaVu Sans (regular + bold) en subset.
+ * Retourne null en cas d'échec (police absente, fontkit indisponible) → appelant retombe sur StandardFonts.
+ */
+async function tryEmbedUnicodeFonts(pdfDoc: PDFDocument): Promise<{
+  fontRegular: Awaited<ReturnType<PDFDocument['embedFont']>>
+  fontBold: Awaited<ReturnType<PDFDocument['embedFont']>>
+} | null> {
+  try {
+    pdfDoc.registerFontkit(fontkit)
+    const fontDir = path.join(process.cwd(), 'public', 'fonts')
+    const regularBytes = fs.readFileSync(path.join(fontDir, 'DejaVuSans.ttf'))
+    const boldBytes = fs.readFileSync(path.join(fontDir, 'DejaVuSans-Bold.ttf'))
+    const fontRegular = await pdfDoc.embedFont(regularBytes, { subset: true })
+    const fontBold = await pdfDoc.embedFont(boldBytes, { subset: true })
+    return { fontRegular, fontBold }
+  } catch (e) {
+    console.warn('[export] police Unicode indisponible, fallback StandardFonts :', e instanceof Error ? e.message : e)
+    return null
+  }
+}
+
+/**
+ * Translittération défensive pour le fallback WinAnsi (StandardFonts).
+ * Remplace les symboles mathématiques fréquents par une notation lisible,
+ * puis supprime tout caractère hors Latin-1/WinAnsi (garde-fou anti-crash).
+ */
+function sanitizeWinAnsi(text: string): string {
+  const MAP: Array<[RegExp, string]> = [
+    [/√/g, 'racine de '],
+    [/≤/g, '<='],
+    [/≥/g, '>='],
+    [/≠/g, '!='],
+    [/≈/g, '~'],
+    [/→/g, '->'],
+    [/←/g, '<-'],
+    [/π/g, 'pi'],
+    [/∑/g, 'Somme '],
+    [/∫/g, 'integrale '],
+    [/Δ/g, 'Delta'],
+    [/Ω/g, 'Omega'],
+    [/α/g, 'alpha'],
+    [/β/g, 'beta'],
+  ]
+  let out = text
+  for (const [re, rep] of MAP) out = out.replace(re, rep)
+  // Garde-fou : retire tout caractère non encodable en WinAnsi (0x00-0xFF utile)
+  out = out.replace(/[^\u0000-\u00FF\u2018\u2019\u201C\u201D\u2013\u2014\u2026\u20AC]/g, '')
+  return out
+}
+
+// ============================================================
 // pdfExport — produit un Buffer .pdf via pdf-lib
 // Respecte le template v1 : pagination A4, titre, métadonnées, 7 sections
 // ============================================================
@@ -218,9 +281,12 @@ export async function pdfExport(rendered: RenderedDocument): Promise<Buffer> {
   pdfDoc.setSubject('Fiche pédagogique')
   pdfDoc.setCreator('Élite v2 — Plateforme pédagogique agentique')
 
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold)
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica)
-  const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique)
+  // F-46 : police Unicode embarquée (DejaVu) si possible, sinon fallback WinAnsi + translittération
+  const unicodeFonts = await tryEmbedUnicodeFonts(pdfDoc)
+  const fontBold = unicodeFonts ? unicodeFonts.fontBold : await pdfDoc.embedFont(StandardFonts.HelveticaBold)
+  const fontRegular = unicodeFonts ? unicodeFonts.fontRegular : await pdfDoc.embedFont(StandardFonts.Helvetica)
+  const fontItalic = fontRegular // pas de variante oblique embarquée : la distinction visuelle se fait par la couleur/gris
+  const sanitize = (t: string): string => (unicodeFonts ? t : sanitizeWinAnsi(t))
 
   // A4 : 595.28 x 841.89 points
   const PAGE_W = 595.28
@@ -253,7 +319,7 @@ export async function pdfExport(rendered: RenderedDocument): Promise<Buffer> {
   }
 
   // Helper : texte wrapped (gère les sauts de ligne manuels + wrapping)
-  const drawWrapped = (text: string, opts: {
+  const drawWrapped = (rawText: string, opts: {
     size: number
     font: typeof fontRegular
     color: ReturnType<typeof rgb>
@@ -262,6 +328,7 @@ export async function pdfExport(rendered: RenderedDocument): Promise<Buffer> {
   }) => {
     const maxWidth = opts.maxWidth ?? CONTENT_W
     const lineHeight = opts.lineHeight ?? opts.size * 1.4
+    const text = sanitize(rawText)
     const paragraphs = text.split('\n')
     for (const para of paragraphs) {
       const words = para.split(/\s+/).filter(Boolean)
@@ -292,14 +359,34 @@ export async function pdfExport(rendered: RenderedDocument): Promise<Buffer> {
 
   // === Titre ===
   ensureSpace(40)
-  const titreWidth = fontBold.widthOfTextAtSize(titre, 18)
-  page.drawText(titre, {
-    x: (PAGE_W - titreWidth) / 2,
-    y,
-    size: 18,
-    font: fontBold,
-    color: COLOR_TEAL,
-  })
+  const safeTitre = sanitize(titre)
+  const titreWidth = fontBold.widthOfTextAtSize(safeTitre, 18)
+  const titreSize = titreWidth > CONTENT_W ? 14 : 18
+  if (titreWidth > CONTENT_W) {
+    // Réduit la taille ; si toujours trop long, wrap simple sur 2 lignes
+    if (fontBold.widthOfTextAtSize(safeTitre, titreSize) > CONTENT_W) {
+      const mid = Math.floor(safeTitre.length / 2)
+      let cut = safeTitre.lastIndexOf(' ', mid)
+      if (cut <= 0) cut = mid
+      const l1 = safeTitre.slice(0, cut).trim()
+      const l2 = safeTitre.slice(cut).trim()
+      for (const part of [l1, l2]) {
+        const w = fontBold.widthOfTextAtSize(part, titreSize)
+        page.drawText(part, { x: (PAGE_W - w) / 2, y, size: titreSize, font: fontBold, color: COLOR_TEAL })
+        y -= titreSize * 1.3
+      }
+    } else {
+      page.drawText(safeTitre, { x: (PAGE_W - fontBold.widthOfTextAtSize(safeTitre, titreSize)) / 2, y, size: titreSize, font: fontBold, color: COLOR_TEAL })
+    }
+  } else {
+    page.drawText(safeTitre, {
+      x: (PAGE_W - titreWidth) / 2,
+      y,
+      size: 18,
+      font: fontBold,
+      color: COLOR_TEAL,
+    })
+  }
   y -= 10
   page.drawLine({
     start: { x: MARGIN, y },
@@ -319,7 +406,7 @@ export async function pdfExport(rendered: RenderedDocument): Promise<Buffer> {
   ]
   for (const line of metaLines) {
     ensureSpace(14)
-    page.drawText(line, { x: MARGIN, y, size: 9, font: fontRegular, color: COLOR_GRAY })
+    page.drawText(sanitize(line), { x: MARGIN, y, size: 9, font: fontRegular, color: COLOR_GRAY })
     y -= 14
   }
   y -= 20
@@ -332,7 +419,7 @@ export async function pdfExport(rendered: RenderedDocument): Promise<Buffer> {
     ensureSpace(40)
 
     // Titre de section
-    page.drawText(label, { x: MARGIN, y, size: 13, font: fontBold, color: COLOR_TEAL })
+    page.drawText(sanitize(label), { x: MARGIN, y, size: 13, font: fontBold, color: COLOR_TEAL })
     y -= 4
     page.drawLine({
       start: { x: MARGIN, y },
