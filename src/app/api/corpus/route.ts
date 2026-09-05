@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { z } from 'zod'
-
+import { requireApiUser, ApiAuthError, type SessionUser } from '@/lib/auth'
 // P0-1 : schéma Zod pour la création d'entrée corpus
 const createCorpusSchema = z.object({
   contenu: z.string().min(10).max(10000),
@@ -60,9 +60,22 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST /api/corpus
+// POST /api/corpus — R-01/S1-b : écriture réservée (editor+).
+// type='fiche_reference' → validator+ (vecteur d'injection F-01 : ces entrées
+// alimentent le prompt système via retrieve_style_reference).
+// metadata.validatedBy est FORCÉ côté serveur (la valeur client est ignorée).
 export async function POST(req: NextRequest) {
   try {
+    let user: SessionUser
+    try {
+      user = await requireApiUser(req, { minRole: 'editor' })
+    } catch (e) {
+      if (e instanceof ApiAuthError) {
+        return NextResponse.json({ error: e.message }, { status: e.status })
+      }
+      throw e
+    }
+
     const body = await req.json()
 
     // P0-1 : validation Zod du body (type et statut en enum — plus d'injection)
@@ -75,6 +88,29 @@ export async function POST(req: NextRequest) {
     }
     const { contenu, type, niveau, chapitre, notionId, exemplaire, statut, metadata } = parsed.data
 
+    // R-01/S1-b : les fiches de référence requièrent le rôle validator.
+    if (type === 'fiche_reference') {
+      try {
+        await requireApiUser(req, { minRole: 'validator' })
+      } catch (e) {
+        if (e instanceof ApiAuthError) {
+          return NextResponse.json(
+            { error: `fiche_reference : ${e.message} (rôle validator requis — vecteur d'injection de prompt)` },
+            { status: e.status },
+          )
+        }
+        throw e
+      }
+    }
+
+    // metadata : source de vérité serveur — validatedBy = créateur authentifié
+    const clientMeta = (metadata && typeof metadata === 'object' ? metadata : {}) as Record<string, unknown>
+    const serverMeta: Record<string, unknown> = { ...clientMeta }
+    if (type === 'fiche_reference') {
+      serverMeta.validatedBy = user.username
+      serverMeta.validatedAt = new Date().toISOString()
+    }
+
     const created = await db.corpusVectoriel.create({
       data: {
         contenu,
@@ -85,7 +121,7 @@ export async function POST(req: NextRequest) {
         exemplaire: !!exemplaire,
         statut: statut || 'brouillon',
         embedding: 'pending',
-        metadata: metadata ? JSON.stringify(metadata) : null,
+        metadata: Object.keys(serverMeta).length > 0 ? JSON.stringify(serverMeta) : null,
       },
     })
     return NextResponse.json({

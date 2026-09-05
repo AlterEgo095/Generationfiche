@@ -151,11 +151,19 @@ async function main() {
     const existing = await db.corpusVectoriel.findUnique({ where: { id: f.id } })
     if (!existing) {
       await db.corpusVectoriel.create({
-        data: { ...f, embedding: 'pending', metadata: JSON.stringify({ source: 'seed-enrichment', auteur: 'équipe pédagogique' }) },
+        data: { ...f, embedding: 'pending', metadata: JSON.stringify({ source: 'seed-enrichment', auteur: 'équipe pédagogique', validatedBy: 'seed-referentiel', validatedAt: new Date().toISOString() }) },
       })
     }
   }
-  console.log(`✅ ${newFichesRef.length} fiches de référence exemplaires ajoutées`)
+  // R-01/S1-c (F-01) : idempotent — toute fiche de référence du seed doit porter
+  // metadata.validatedBy pour être éligible au prompt (retrieve_style_reference).
+  // Backfill aussi les fiches seedées existantes créées avant R-01.
+  const refIds = newFichesRef.map((f) => f.id)
+  const refBackfill = await db.corpusVectoriel.updateMany({
+    where: { id: { in: refIds }, type: 'fiche_reference' },
+    data: { metadata: JSON.stringify({ source: 'seed-enrichment', auteur: 'équipe pédagogique', validatedBy: 'seed-referentiel', validatedAt: new Date().toISOString() }) },
+  })
+  console.log(`✅ ${newFichesRef.length} fiches de référence exemplaires ajoutées (backfill validatedBy : ${refBackfill.count})`)
 
   // =========================================================
   // RÈGLES pour les nouveaux niveaux/chapitres

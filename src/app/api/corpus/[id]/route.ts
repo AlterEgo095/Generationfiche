@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { z } from 'zod'
+import { requireApiUser, ApiAuthError } from '@/lib/auth'
 
 // P0-1 : schéma Zod pour le PATCH corpus (statut en enum)
 const patchCorpusSchema = z.object({
@@ -9,10 +10,17 @@ const patchCorpusSchema = z.object({
   contenu: z.string().min(10).max(10000).optional(),
 })
 
-// PATCH /api/corpus/[id]
+// PATCH /api/corpus/[id] — R-01/S1-b : écriture editor+ ; sur une
+// fiche_reference (contenu ou promotion validee) → validator+ et
+// metadata.validatedBy mis à jour (source de vérité serveur).
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const user = await requireApiUser(req, { minRole: 'editor' })
     const { id } = await params
+
+    const existing = await db.corpusVectoriel.findUnique({ where: { id } })
+    if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
     const body = await req.json()
 
     // P0-1 : validation Zod du body
@@ -23,10 +31,40 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         { status: 400 },
       )
     }
+
+    // Règle fine : toucher une fiche de référence requiert validator+
+    const touchesReference = existing.type === 'fiche_reference' && (parsed.data.contenu !== undefined || parsed.data.statut === 'validee' || parsed.data.exemplaire === true)
+    if (touchesReference) {
+      try {
+        await requireApiUser(req, { minRole: 'validator' })
+      } catch (e) {
+        if (e instanceof ApiAuthError) {
+          return NextResponse.json(
+            { error: `fiche_reference : ${e.message} (rôle validator requis — vecteur d'injection de prompt)` },
+            { status: e.status },
+          )
+        }
+        throw e
+      }
+    }
+
     const data: Record<string, unknown> = {}
     if (parsed.data.statut !== undefined) data.statut = parsed.data.statut
     if (parsed.data.exemplaire !== undefined) data.exemplaire = parsed.data.exemplaire
     if (parsed.data.contenu !== undefined) data.contenu = parsed.data.contenu
+
+    // metadata : traçabilité de validation (forcée serveur)
+    if (existing.type === 'fiche_reference' && touchesReference) {
+      let meta: Record<string, unknown> = {}
+      try {
+        meta = existing.metadata ? (JSON.parse(existing.metadata) as Record<string, unknown>) : {}
+      } catch {
+        meta = {}
+      }
+      meta.validatedBy = user.username
+      meta.validatedAt = new Date().toISOString()
+      data.metadata = JSON.stringify(meta)
+    }
 
     const updated = await db.corpusVectoriel.update({
       where: { id },
@@ -71,6 +109,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       updatedAt: c.updatedAt.toISOString(),
     })
   } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return NextResponse.json({ error: msg }, { status: 500 })
+  }
+}
+
+// DELETE /api/corpus/[id] — R-01/S1-b : suppression réservée au rôle admin
+// (route inexistante avant R-01 : F-01/Phase 9 constatait un 405).
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    await requireApiUser(req, { minRole: 'admin' })
+    const { id } = await params
+    const existing = await db.corpusVectoriel.findUnique({ where: { id }, select: { id: true } })
+    if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    await db.corpusVectoriel.delete({ where: { id } })
+    return NextResponse.json({ ok: true, id })
+  } catch (e) {
+    if (e instanceof ApiAuthError) {
+      return NextResponse.json({ error: e.message }, { status: e.status })
+    }
     const msg = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: msg }, { status: 500 })
   }

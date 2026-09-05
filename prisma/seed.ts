@@ -388,7 +388,8 @@ async function main() {
   ]
   for (const f of fichesRef) {
     await db.corpusVectoriel.create({
-      data: { ...f, embedding: 'pending', metadata: JSON.stringify({ source: 'seed', auteur: 'équipe pédagogique' }) },
+      // R-01/S1-c (F-01) : metadata.validatedBy requis pour entrer dans un prompt
+      data: { ...f, embedding: 'pending', metadata: JSON.stringify({ source: 'seed', auteur: 'équipe pédagogique', validatedBy: 'seed-referentiel', validatedAt: new Date().toISOString() }) },
     })
   }
 
