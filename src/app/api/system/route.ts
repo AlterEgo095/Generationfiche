@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { processOutbox } from '@/lib/outbox-worker'
 import { llmRateLimiter } from '@/lib/llm-limiter'
+import { pipelineGate } from '@/lib/pipeline-gate'
 
 // GET /api/system — Dashboard système complet
 // Retourne : santé API, état queue LLM, état outbox, erreurs 24h, temps moyen génération
@@ -49,6 +50,9 @@ export async function GET() {
     // LLM limiter status
     const llmStatus = llmRateLimiter.getStatus()
 
+    // R-12 : statut du gouverneur d'admission des pipelines (F-33 fermé)
+    const gateStatus = pipelineGate.getStatus()
+
     // Worker status : healthy si pas trop d'events failed
     const failedEvents = outboxMap['failed_delivery'] || 0
     const pendingEvents = outboxMap['pending'] || 0
@@ -73,6 +77,7 @@ export async function GET() {
         active: llmStatus.active,
         queued: llmStatus.queued,
         consecutive_errors: llmStatus.consecutiveErrors,
+        pacing_ms: llmStatus.pacingMs,
         max_concurrent: parseInt(process.env.MAX_CONCURRENT_LLM || '3', 10),
       },
       outbox: {
@@ -90,6 +95,14 @@ export async function GET() {
           message: lastEvent.message,
         } : null,
         worker_status: workerStatus,
+      },
+      pipeline_gate: {
+        enabled: gateStatus.enabled,
+        active: gateStatus.active,
+        max: gateStatus.max,
+        queued: gateStatus.queued,
+        total_admitted: gateStatus.totalAdmitted,
+        total_refused: gateStatus.totalRefused,
       },
       errors_24h: errors24h,
       agent_latencies_24h: agentLatencies.map((a) => ({

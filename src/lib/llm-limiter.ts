@@ -5,6 +5,14 @@
 //   - Rate limiter : max N appels simultanés, queue FIFO
 //   - Circuit breaker : 3 erreurs consécutives → OPEN (pause 30s) → HALF-OPEN (1 test) → CLOSED
 //   - Retry avec backoff exponentiel : 1s, 2s, 4s (max 3 retries)
+//
+// R-12 (Fermé F-33) : PACING GLOBAL INTÉGRÉ — espacement minimum entre les
+// DÉBUTS d'appels LLM (LLM_MIN_SPACING_MS, défaut 2500ms). Preuve d'audit :
+// paced 2.5s → p50 3.9s / p95 5.2s, 24/24 OK, 0 tempête 429 ; non-paced →
+// p95 12.7s, 30/56 échecs, circuit breaker OPEN. Le pacing s'applique au
+// singleton partagé : le débit est borné à l'échelle PLATEFORME, quel que
+// soit le nombre de pipelines en vol (complément du PipelineGate).
+// Réversibilité : LLM_GOVERNOR=off → pacing 0 (comportement antérieur).
 
 type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN'
 
@@ -17,12 +25,20 @@ export class LLMRateLimiter {
   private readonly maxConcurrent: number
   private readonly circuitThreshold = 3
   private readonly circuitCooldownMs = 30000
+  // R-12 : pacing global (espacement minimal entre débuts d'appels)
+  private readonly minSpacingMs: number
+  private lastStartAt = 0
 
   constructor(maxConcurrent = 3) {
     this.maxConcurrent = maxConcurrent
+    const governorOff = (process.env.LLM_GOVERNOR || 'on') === 'off'
+    this.minSpacingMs = governorOff
+      ? 0
+      : Math.max(0, parseInt(process.env.LLM_MIN_SPACING_MS || '2500', 10))
   }
 
   // Acquiert un slot — bloque si max concurrent atteint ou circuit OPEN
+  // R-12 : applique ensuite le pacing global (espacement entre débuts d'appels)
   async acquire(): Promise<void> {
     // Circuit breaker check
     if (this.circuitState === 'OPEN') {
@@ -39,6 +55,16 @@ export class LLMRateLimiter {
       await new Promise<void>((resolve) => this.queue.push(resolve))
     }
     this.active++
+
+    // R-12 : pacing — attends l'espacement minimum depuis le dernier DÉBUT d'appel
+    if (this.minSpacingMs > 0) {
+      const now = Date.now()
+      const earliestAllowed = this.lastStartAt + this.minSpacingMs
+      if (now < earliestAllowed) {
+        await new Promise((r) => setTimeout(r, earliestAllowed - now))
+      }
+      this.lastStartAt = Date.now()
+    }
   }
 
   // Libère le slot et enregistre le succès/échec
@@ -96,12 +122,13 @@ export class LLMRateLimiter {
   }
 
   // État du circuit (pour monitoring)
-  getStatus(): { state: CircuitState; active: number; queued: number; consecutiveErrors: number } {
+  getStatus(): { state: CircuitState; active: number; queued: number; consecutiveErrors: number; pacingMs: number } {
     return {
       state: this.circuitState,
       active: this.active,
       queued: this.queue.length,
       consecutiveErrors: this.consecutiveErrors,
+      pacingMs: this.minSpacingMs,
     }
   }
 
@@ -112,6 +139,7 @@ export class LLMRateLimiter {
     this.consecutiveErrors = 0
     this.circuitState = 'CLOSED'
     this.circuitOpenedAt = 0
+    this.lastStartAt = 0
   }
 }
 
