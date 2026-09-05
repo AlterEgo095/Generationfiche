@@ -78,6 +78,8 @@ export async function GET() {
         queued: llmStatus.queued,
         consecutive_errors: llmStatus.consecutiveErrors,
         pacing_ms: llmStatus.pacingMs,
+        adaptive_spacing_ms: llmStatus.adaptiveSpacingMs,
+        rate_limit_hits: llmStatus.rateLimitHits,
         max_concurrent: parseInt(process.env.MAX_CONCURRENT_LLM || '3', 10),
       },
       outbox: {
