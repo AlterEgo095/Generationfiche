@@ -15,7 +15,8 @@ import { wrapCorpusData, DATA_NOT_INSTRUCTION_RULE } from '@/lib/prompt-guard'
 // ============================================================
 // Système prompt commun aux deux versions — embed le GenerationContext
 // ============================================================
-function buildSystemPrompt(ctx: GenerationContext, version: 'v1' | 'v2'): string {
+// Exporté pour tests d'intégration prompt-guard (même code path que la prod).
+export function buildSystemPrompt(ctx: GenerationContext, version: 'v1' | 'v2'): string {
   const notionsStr = ctx.notions
     .map(
       (n) =>
