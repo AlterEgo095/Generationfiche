@@ -105,13 +105,27 @@ export async function retrieve_style_reference(
       chapitre,
     },
     orderBy: { createdAt: 'desc' },
-    take: k,
+    // R-01/S1-c : take élargi — post-filtre validatedBy ci-dessous
+    take: k * 4,
+  })
+
+  // R-01/S1-c (F-01) : une fiche de référence n'entre dans un prompt que si
+  // elle a été validée par un compte identifié (metadata.validatedBy, forcé
+  // serveur par l'API corpus depuis R-01). Les entrées anonymes antérieures
+  // (vecteur d'injection F-01) sont exclues du canal prompt.
+  const fichesValidees = fiches.filter((f) => {
+    try {
+      const meta = f.metadata ? (JSON.parse(f.metadata as string) as Record<string, unknown>) : null
+      return !!meta && typeof meta.validatedBy === 'string' && meta.validatedBy.length > 0
+    } catch {
+      return false
+    }
   })
 
   // PAS DE FALLBACK. Filtre strict respecté.
   // Si [] → le Rédacteur reçoit references_style: [] et produit du contenu sans
   // référence de style. Le prompt du Rédacteur gère déjà ce cas ("(aucune référence disponible)").
-  return fiches.map((f) => ({
+  return fichesValidees.slice(0, k).map((f) => ({
     fiche_id: f.id,
     extrait: f.contenu.slice(0, 1200),
     niveau: f.niveau,

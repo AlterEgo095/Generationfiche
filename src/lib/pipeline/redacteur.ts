@@ -10,6 +10,7 @@ import { SECTION_LABELS } from '@/lib/contracts'
 import { validateSectionContent, validateOrThrow } from '@/lib/validate'
 import { llmRateLimiter } from '@/lib/llm-limiter'
 import { metrics } from '@/lib/metrics'
+import { wrapCorpusData, DATA_NOT_INSTRUCTION_RULE } from '@/lib/prompt-guard'
 
 // ============================================================
 // Système prompt commun aux deux versions — embed le GenerationContext
@@ -22,12 +23,22 @@ function buildSystemPrompt(ctx: GenerationContext, version: 'v1' | 'v2'): string
     )
     .join('\n')
 
-  const exemplesStr = ctx.exemples_pedagogiques
-    .map((e, i) => `Exemple ${i + 1} (score ${e.score}): ${e.contenu}`)
+  // R-01/S1-c (F-01) : tout canal alimenté par le corpus est encapsulé
+  // dans <corpus_data> après sanitisation (DATA jamais INSTRUCTION).
+  const exemplesWrapped = ctx.exemples_pedagogiques.map((e, i) =>
+    wrapCorpusData(`exemple_pedagogique_${i + 1}`, e.contenu),
+  )
+  const exemplesStr = exemplesWrapped
+    .map((w, i) => `Exemple ${i + 1} (score ${ctx.exemples_pedagogiques[i].score}):
+${w.wrapped}`)
     .join('\n\n')
 
-  const refsStr = ctx.references_style
-    .map((r, i) => `Référence ${i + 1} (${r.niveau} / ${r.chapitre}):\n${r.extrait}`)
+  const refsWrapped = ctx.references_style.map((r, i) =>
+    wrapCorpusData(`fiche_reference_${i + 1}_${r.niveau}`, r.extrait),
+  )
+  const refsStr = refsWrapped
+    .map((w, i) => `Référence ${i + 1} (${ctx.references_style[i].niveau} / ${ctx.references_style[i].chapitre}):
+${w.wrapped}`)
     .join('\n\n---\n\n')
 
   const reglesStr = Object.entries(ctx.regles)
@@ -35,7 +46,7 @@ function buildSystemPrompt(ctx: GenerationContext, version: 'v1' | 'v2'): string
     .join('\n')
 
   const ctxClasseStr = ctx.contexte_classe
-    ? `Contexte classe imposé (à intégrer obligatoirement) :\n${JSON.stringify(ctx.contexte_classe, null, 2)}`
+    ? `Contexte classe imposé (à intégrer obligatoirement) :\n${wrapCorpusData('contexte_classe', JSON.stringify(ctx.contexte_classe, null, 2)).wrapped}`
     : 'Aucun contexte classe spécifique.'
 
   const tonInstruction =
@@ -53,6 +64,8 @@ function buildSystemPrompt(ctx: GenerationContext, version: 'v1' | 'v2'): string
 
   return `Tu es l'Agent Rédacteur d'une plateforme de génération de séquences pédagogiques francophones (collège/lycée).
 Tu produis UNE section de fiche pédagogique à la fois, en français, à partir d'un GenerationContext fourni.
+
+${DATA_NOT_INSTRUCTION_RULE}
 
 ${tonInstruction}
 
