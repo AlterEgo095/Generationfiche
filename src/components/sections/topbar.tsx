@@ -6,6 +6,7 @@ import { Moon, Sun, Sparkles, Activity } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { useStore, SECTION_META } from '@/lib/store'
+import { AuthBadge } from '@/components/auth-badge'
 import { cn } from '@/lib/utils'
 
 // Etat "monté" via useSyncExternalStore — évite le pattern setState-in-effect.
@@ -47,6 +48,9 @@ export function TopBar() {
             <Activity className="size-3" />
           </Badge>
         )}
+
+        {/* Auth (R-01 : session 3 rôles) */}
+        <AuthBadge />
 
         {/* Theme toggle */}
         <Button

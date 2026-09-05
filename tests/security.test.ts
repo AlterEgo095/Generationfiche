@@ -1,7 +1,8 @@
 // Tests — Security Hardening (P4-3 Sprint 4)
 // Vérifie : headers de sécurité, validation Zod, injection bloquée.
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
+import { authed, loginTestUser } from './helpers/authed'
 
 describe('Security Headers', () => {
   it('le middleware ajoute X-Content-Type-Options', async () => {
@@ -28,8 +29,14 @@ describe('Security Headers', () => {
 })
 
 describe('Security — API Input Validation', () => {
+  // R-01 : l'API exige désormais une session (ferme F-06) — la validation
+  // d'entrée est testée en utilisateur authentifié.
+  beforeAll(async () => {
+    await loginTestUser()
+  }, 20000)
+
   it('POST /api/corpus rejette type invalide (Zod enum)', async () => {
-    const resp = await fetch('http://localhost:3000/api/corpus', {
+    const resp = await authed('/api/corpus', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contenu: 'test contenu valide', type: 'TYPE_INCONNU', niveau: '4e', chapitre: 'test' }),
@@ -40,7 +47,7 @@ describe('Security — API Input Validation', () => {
   })
 
   it('POST /api/pipeline/generate rejette skillVersion invalide', async () => {
-    const resp = await fetch('http://localhost:3000/api/pipeline/generate', {
+    const resp = await authed('/api/pipeline/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'batch', demande: 'x', skillVersion: 'v999', validateVersion: 'v1' }),
@@ -49,7 +56,7 @@ describe('Security — API Input Validation', () => {
   })
 
   it('POST /api/sequences rejette notionIds inexistants (pré-validation FK)', async () => {
-    const resp = await fetch('http://localhost:3000/api/sequences', {
+    const resp = await authed('/api/sequences', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ titre: 'Test', niveau: '4e', chapitre: 'x', semaine: 1, notionIds: ['fake-id-123'] }),
@@ -61,7 +68,7 @@ describe('Security — API Input Validation', () => {
 
   it('POST /api/corpus rejette payload massif (>10000 chars)', async () => {
     const big = 'x'.repeat(50000)
-    const resp = await fetch('http://localhost:3000/api/corpus', {
+    const resp = await authed('/api/corpus', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contenu: big, type: 'exemple_pedagogique', niveau: '4e', chapitre: 'test' }),
@@ -70,7 +77,7 @@ describe('Security — API Input Validation', () => {
   })
 
   it('GET /api/sequences avec injection SQL est neutralisé (Prisma paramétré)', async () => {
-    const resp = await fetch("http://localhost:3000/api/sequences?statut=' OR '1'='1")
+    const resp = await authed("/api/sequences?statut=' OR '1'='1")
     expect(resp.status).toBe(200)
     const body = await resp.json()
     // L'injection est traitée comme une string littérale → 0 résultats
@@ -78,7 +85,7 @@ describe('Security — API Input Validation', () => {
   })
 
   it('POST /api/corpus avec XSS payload est stocké mais échappé à l\'export', async () => {
-    const resp = await fetch('http://localhost:3000/api/corpus', {
+    const resp = await authed('/api/corpus', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contenu: '<script>alert(1)</script> test', type: 'exemple_pedagogique', niveau: '4e', chapitre: 'test' }),
@@ -88,7 +95,7 @@ describe('Security — API Input Validation', () => {
     // L'entrée est stockée (React escape à l'affichage, escapeHtml à l'export)
     expect(body.contenu).toContain('<script>')
     // Nettoyage
-    await fetch(`http://localhost:3000/api/corpus/${body.id}`, {
+    await authed(`/api/corpus/${body.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contenu: 'cleaned entry for security test' }),
