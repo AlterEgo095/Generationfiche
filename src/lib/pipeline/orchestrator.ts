@@ -24,6 +24,8 @@ import { compileGenerationContext } from './knowledge-compiler'
 import { generateSectionPair, generateAllSections } from './redacteur'
 import { validateStructurel, validatePedagogique } from './critique'
 import { renderFiche, commitBatch } from './superviseur'
+import { assertEvidenceOrFlag } from './evidence-gate'
+import { refreshEvidenceOnCritique, isCritiqueRetrievalLoopEnabled } from './evidence-refresher'
 import type { BatchPlan, BatchPlanItem, RenderedDocument } from '@/lib/contracts'
 
 const PIPELINE_WS_URL = 'http://127.0.0.1:3004/emit'
@@ -450,6 +452,41 @@ async function processSequence(p: {
     statut: 'ok',
   })
 
+  // ----- 2bis. EVIDENCE GATE (F-02) — admission sur preuves avant tout LLM -----
+  // F-02 : 0 exemple (ou scores sous le seuil de bruit) => le Rédacteur inventait
+  // du contenu non adossé au curriculum. Désormais : PAS de génération sans preuve.
+  const evidenceCheck = assertEvidenceOrFlag(ctx)
+  if (!evidenceCheck.proceed) {
+    const reasons = evidenceCheck.assessment.reasons.join(' ; ')
+    await emitPipelineEvent(batchId, {
+      sequence_id: item.sequence_id,
+      agent: 'knowledge_compiler',
+      skill: 'evidence_gate_v1',
+      phase: 'error',
+      message: `INSUFFICIENT_EVIDENCE — séquence non générée : ${reasons}`,
+      payload: {
+        level: evidenceCheck.assessment.level,
+        exemples: evidenceCheck.assessment.exemplesCount,
+        max_score: evidenceCheck.assessment.maxScore,
+        seuil: evidenceCheck.assessment.minScore,
+      },
+    })
+    await persistAgentRun({
+      sequenceId: item.sequence_id,
+      batchId,
+      agent: 'knowledge_compiler',
+      skill: 'evidence_gate_v1',
+      input: { sequence_id: item.sequence_id, exemples: evidenceCheck.assessment.exemplesCount, max_score: evidenceCheck.assessment.maxScore },
+      output: { proceed: false, level: evidenceCheck.assessment.level, reasons },
+      decision: 'fail',
+      durationMs: 0,
+      statut: 'warning',
+    })
+    // Séquence mise en attente de revue humaine (ajout de corpus, reformulation), PAS échec.
+    await db.sequence.update({ where: { id: item.sequence_id }, data: { statut: 'en_attente' } })
+    return
+  }
+
   // Marque la séquence en_cours
   await db.sequence.update({ where: { id: item.sequence_id }, data: { statut: 'en_cours' } })
 
@@ -481,7 +518,9 @@ async function generateValidateRender(p: {
   validateVersion: 'v1' | 'v2'
   maxRetriesPerSection: number
 }): Promise<void> {
-  const { batchId, sequenceId, sequenceTitre, ctx, skillVersion, validateVersion, maxRetriesPerSection } = p
+  const { batchId, sequenceId, sequenceTitre, skillVersion, validateVersion, maxRetriesPerSection } = p
+  // F-32 : ctx devient mutable — la boucle Critique→Retrieval l'enrichit entre deux tentatives
+  let ctx = p.ctx
 
   let sections: SectionContent[] = []
   let retryCount = 0
@@ -613,6 +652,36 @@ async function generateValidateRender(p: {
       }
       retryCount++
       const sectionToRegen = validation.section_a_regenerer as FicheSectionId
+
+      // F-32 : boucle Critique→Retrieval — on enrichit le contexte AVANT de régénérer,
+      // sinon un déficit de preuves rejoue à l'identique (retry aveugle).
+      const refresh = await refreshEvidenceOnCritique({
+        ctx,
+        signals: { raisons: validation.structurel_raisons || [], section: sectionToRegen },
+      })
+      if (refresh.added > 0) ctx = refresh.ctx
+      await emitPipelineEvent(batchId, {
+        sequence_id: sequenceId,
+        agent: 'knowledge_compiler',
+        skill: 'refresh_evidence_v1',
+        phase: 'progress',
+        message: refresh.loopEnabled
+          ? `Boucle Critique→Retrieval : +${refresh.added} exemple(s) ajouté(s) au contexte (requête affinée)`
+          : `Boucle Critique→Retrieval désactivée (CRITIQUE_RETRIEVAL_LOOP=off)`,
+        payload: { added: refresh.added, refined_query: refresh.refinedQuery.slice(0, 200), trigger: 'structurel' },
+      })
+      await persistAgentRun({
+        sequenceId,
+        batchId,
+        agent: 'knowledge_compiler',
+        skill: 'refresh_evidence_v1',
+        input: { trigger: 'structurel', section: sectionToRegen, raisons: validation.structurel_raisons },
+        output: { added: refresh.added, exemples_total: ctx.exemples_pedagogiques.length },
+        decision: 'retry',
+        durationMs: 0,
+        statut: refresh.added > 0 ? 'ok' : 'warning',
+      })
+
       await emitPipelineEvent(batchId, {
         sequence_id: sequenceId,
         agent: 'redacteur',
@@ -719,6 +788,36 @@ async function generateValidateRender(p: {
     }
     retryCount++
     const sectionToRegen = (validation.section_a_regenerer ?? 'deroulement') as FicheSectionId
+
+    // F-32 : boucle Critique→Retrieval — mêmes armes sur échec pédagogique :
+    // les raisons LLM affinent la requête, le contexte se recharge en preuves.
+    const refresh = await refreshEvidenceOnCritique({
+      ctx,
+      signals: { raisons: validation.pedagogique_raisons || [], section: sectionToRegen },
+    })
+    if (refresh.added > 0) ctx = refresh.ctx
+    await emitPipelineEvent(batchId, {
+      sequence_id: sequenceId,
+      agent: 'knowledge_compiler',
+      skill: 'refresh_evidence_v1',
+      phase: 'progress',
+      message: refresh.loopEnabled
+        ? `Boucle Critique→Retrieval : +${refresh.added} exemple(s) ajouté(s) au contexte (requête affinée)`
+        : `Boucle Critique→Retrieval désactivée (CRITIQUE_RETRIEVAL_LOOP=off)`,
+      payload: { added: refresh.added, refined_query: refresh.refinedQuery.slice(0, 200), trigger: 'pedagogique' },
+    })
+    await persistAgentRun({
+      sequenceId,
+      batchId,
+      agent: 'knowledge_compiler',
+      skill: 'refresh_evidence_v1',
+      input: { trigger: 'pedagogique', section: sectionToRegen, raisons: validation.pedagogique_raisons },
+      output: { added: refresh.added, exemples_total: ctx.exemples_pedagogiques.length },
+      decision: 'retry',
+      durationMs: 0,
+      statut: refresh.added > 0 ? 'ok' : 'warning',
+    })
+
     await emitPipelineEvent(batchId, {
       sequence_id: sequenceId,
       agent: 'redacteur',
