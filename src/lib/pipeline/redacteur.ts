@@ -79,7 +79,7 @@ Curriculum : ${ctx.curriculum_version}
 ${notionsStr}
 
 === EXEMPLES PÉDAGOGIQUES (puises tes exemples ici) ===
-${exemplesStr || '(aucun exemple disponible — inventes-en en restant fidèle aux objectifs)'}
+${exemplesStr || "(aucun exemple issu du corpus validé — n'invente AUCUN contexte factuel externe : limite-toi aux notions, objectifs et règles ci-dessous ; si tu construis un exemple, présente-le explicitement comme une illustration générique)"}
 
 === RÉFÉRENCES DE STYLE (imite la structure, pas le contenu) ===
 ${refsStr || '(aucune référence disponible)'}
