@@ -487,6 +487,19 @@ async function processSequence(p: {
     return
   }
 
+  // Trace côté PASS : admission sur preuves accordée (observabilité complète du gate)
+  await persistAgentRun({
+    sequenceId: item.sequence_id,
+    batchId,
+    agent: 'knowledge_compiler',
+    skill: 'evidence_gate_v1',
+    input: { sequence_id: item.sequence_id, exemples: evidenceCheck.assessment.exemplesCount, max_score: evidenceCheck.assessment.maxScore },
+    output: { proceed: true, level: evidenceCheck.assessment.level, strong: evidenceCheck.assessment.strongCount, seuil: evidenceCheck.assessment.minScore, notes: evidenceCheck.assessment.reasons },
+    decision: 'continue',
+    durationMs: 0,
+    statut: evidenceCheck.assessment.reasons.length > 0 ? 'warning' : 'ok',
+  })
+
   // Marque la séquence en_cours
   await db.sequence.update({ where: { id: item.sequence_id }, data: { statut: 'en_cours' } })
 
