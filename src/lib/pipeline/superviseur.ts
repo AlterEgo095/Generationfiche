@@ -19,7 +19,7 @@ import {
   type SectionContent,
 } from '@/lib/contracts'
 import { validateRenderedDocument, validateOrThrow } from '@/lib/validate'
-import { computePedagogicalScore, isPublishable, type PedagogicalScore } from '@/lib/quality-gate'
+import { computePedagogicalScore, isPublishable, PUBLICATION_THRESHOLD, type PedagogicalScore } from '@/lib/quality-gate'
 
 // ============================================================
 // renderFiche — assemble les SectionContent[] en un RenderedDocument
@@ -165,11 +165,32 @@ function escapeHtml(s: string): string {
 // ============================================================
 // commitBatch — marque les livrables validés, clôture le batch.
 // Atomicité par séquence (un livrable valide = une séquence validee).
+//
+// F-31 (audit 360°, EXP C3) — AVANT : commitBatch marquait valide = !hasError,
+// ignorant le score pédagogique ET pedagogique_pass → une fiche vidée/verbeuse
+// ou mathématiquement fausse passait la publication si aucun agent_run n'avait
+// statut "error". LE GATE ÉTAIT CONTOURNÉ AU COMMIT.
+//
+// R-31 : le commit rejoue la chaîne complète des gates et ne valide QUE si :
+//   1. aucun agent_run en erreur dans le batch (inchangé)
+//   2. validationResult du livrable : structurelPass = true
+//   3. validationResult du livrable : pedagogiquePass = true (veto critique LLM)
+//   4. score pédagogique (quality-gate) >= PUBLICATION_THRESHOLD
+// Sinon : livrable.valide=false et séquence en_attente (revue humaine).
+//
+// Idempotence (même finding EXP C3) : si un commit existe déjà pour
+// (batchId, sequence), la séquence est sautée — rejouer un batch ne duplique
+// plus les agent_runs de commit.
 // ============================================================
 export async function commitBatch(batchId: string): Promise<{
   committed: number
   escalated: number
-  items: Array<{ sequence_id: string; livrable_id?: string; statut: string }>
+  items: Array<{
+    sequence_id: string
+    livrable_id?: string
+    statut: string
+    gate?: { ok: boolean; score: number | null; reasons: string[] }
+  }>
 }> {
   // Guard P0-5 : validation des entrées
   if (!batchId || typeof batchId !== 'string') {
@@ -183,11 +204,28 @@ export async function commitBatch(batchId: string): Promise<{
   })
   const seqIds = Array.from(new Set(runs.map((r) => r.sequenceId).filter(Boolean))) as string[]
 
+  // F-31 — Idempotence : les séquences déjà committées dans ce batch sont sautées
+  const priorCommits = await db.agentRun.findMany({
+    where: { batchId, agent: 'superviseur', skill: 'commit_batch_v1' },
+    select: { sequenceId: true },
+  })
+  const alreadyCommitted = new Set(priorCommits.map((r) => r.sequenceId))
+
   let committed = 0
   let escalated = 0
-  const items: Array<{ sequence_id: string; livrable_id?: string; statut: string }> = []
+  const items: Array<{
+    sequence_id: string
+    livrable_id?: string
+    statut: string
+    gate?: { ok: boolean; score: number | null; reasons: string[] }
+  }> = []
 
   for (const seqId of seqIds) {
+    if (alreadyCommitted.has(seqId)) {
+      items.push({ sequence_id: seqId, statut: 'deja_committed' })
+      continue
+    }
+
     const seqRuns = runs.filter((r) => r.sequenceId === seqId)
     const hasEscalade = seqRuns.some((r) => r.decision === 'escalade_humaine')
     const hasError = seqRuns.some((r) => r.statut === 'error')
@@ -206,38 +244,65 @@ export async function commitBatch(batchId: string): Promise<{
       orderBy: { createdAt: 'desc' },
     })
     if (livrable) {
+      // F-31 — Rejoue la chaîne complète des gates au lieu de faire confiance à !hasError
+      let score: number | null = null
+      try {
+        const parsed = JSON.parse(livrable.contenuJson || '{}') as {
+          pedagogical_score?: { score?: number }
+          contenu_final?: { pedagogical_score?: { score?: number } }
+        }
+        const ps = parsed?.pedagogical_score?.score ?? parsed?.contenu_final?.pedagogical_score?.score
+        if (typeof ps === 'number' && Number.isFinite(ps)) score = ps
+      } catch {
+        // contenuJson non parsable → score inconnu → gate échoue (pessimiste)
+      }
+      const vr = await db.validationResult.findFirst({
+        where: { livrableId: livrable.id },
+        orderBy: { createdAt: 'desc' },
+      })
+
+      const gateReasons: string[] = []
+      if (hasError) gateReasons.push('agent_run en erreur dans le batch')
+      if (!vr || vr.structurelPass !== true) gateReasons.push('validation structurelle absente ou FAIL')
+      if (!vr || vr.pedagogiquePass !== true) gateReasons.push('validation pédagogique absente ou FAIL (veto critique)')
+      if (score === null) gateReasons.push('score pédagogique absent du rendu')
+      else if (score < PUBLICATION_THRESHOLD) gateReasons.push(`score pédagogique ${score} < seuil ${PUBLICATION_THRESHOLD}`)
+      const gateOK = gateReasons.length === 0
+
       await db.livrable.update({
         where: { id: livrable.id },
-        data: { valide: !hasError },
+        data: { valide: gateOK },
       })
+      const statut = gateOK ? 'validee' : hasError ? 'en_cours' : 'en_attente'
       await db.sequence.update({
         where: { id: seqId },
-        data: { statut: hasError ? 'en_cours' : 'validee' },
+        data: { statut },
       })
-      if (!hasError) committed++
+      if (gateOK) committed++
       items.push({
         sequence_id: seqId,
         livrable_id: livrable.id,
-        statut: hasError ? 'en_cours' : 'validee',
+        statut,
+        gate: { ok: gateOK, score, reasons: gateReasons },
+      })
+
+      // Agent run de commit
+      await db.agentRun.create({
+        data: {
+          sequenceId: seqId,
+          batchId,
+          agent: 'superviseur',
+          skill: 'commit_batch_v1',
+          input: JSON.stringify({ batch_id: batchId, sequence_id: seqId, livrable_id: livrable.id }),
+          output: JSON.stringify({ committed: gateOK, livrable_id: livrable.id, gate: { ok: gateOK, score, reasons: gateReasons } }),
+          decision: gateOK ? 'continue' : hasError ? 'fail' : 'retry',
+          durationMs: lastSuperviseur?.durationMs ?? 0,
+          statut: gateOK ? 'ok' : 'warning',
+        },
       })
     } else {
       items.push({ sequence_id: seqId, statut: 'echec' })
     }
-
-    // Agent run de commit
-    await db.agentRun.create({
-      data: {
-        sequenceId: seqId,
-        batchId,
-        agent: 'superviseur',
-        skill: 'commit_batch_v1',
-        input: JSON.stringify({ batch_id: batchId, sequence_id: seqId, livrable_id: livrable?.id }),
-        output: JSON.stringify({ committed: !hasError, livrable_id: livrable?.id }),
-        decision: hasEscalade ? 'escalade_humaine' : !hasError ? 'continue' : 'fail',
-        durationMs: lastSuperviseur?.durationMs ?? 0,
-        statut: hasError ? 'warning' : 'ok',
-      },
-    })
   }
 
   return { committed, escalated, items }

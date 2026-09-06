@@ -137,3 +137,70 @@ describe('Quality Gate pédagogique', () => {
     expect(score.criteria.differentiation).toBe(false)
   })
 })
+
+// ============================================================
+// R-31 (F-31) — critères de substance & anti-inflation
+// ============================================================
+describe('Quality Gate — substance (F-31)', () => {
+  it('VIDE-VERBEUX : fiche verbeuse à phrases répétées pénalisée sous le seuil', () => {
+    const verbeux = 'Les élèves vont travailler en groupes sur des activités variées et intéressantes. '
+      + 'Cette étape est importante pour la progression des apprentissages des élèves. '
+      + 'Les élèves vont travailler en groupes sur des activités variées et intéressantes. '
+      + 'Cette étape est importante pour la progression des apprentissages des élèves. '
+      + 'Les élèves vont travailler en groupes sur des activités variées et intéressantes. '
+      + 'Cette étape est importante pour la progression des apprentissages des élèves. '
+      + 'Les élèves vont travailler en groupes sur des activités variées et intéressantes. '
+      + 'Cette étape est importante pour la progression des apprentissages des élèves. '
+      + 'Les élèves vont travailler en groupes sur des activités variées et intéressantes. '
+      + 'Cette étape est importante pour la progression des apprentissages des élèves. '
+      + 'Les élèves vont travailler en groupes sur des activités variées et intéressantes. '
+      + 'Cette étape est importante pour la progression des apprentissages des élèves. '
+      + 'Les élèves vont travailler en groupes sur des activités variées et intéressantes. '
+      + 'Cette étape est importante pour la progression des apprentissages des élèves. '
+      + 'Les élèves vont travailler en groupes sur des activités variées et intéressantes. '
+      + 'Cette étape est importante pour la progression des apprentissages des élèves.'
+    // Verbeux partout sauf déroulement : les compteurs passent, la substance non
+    const sections: SectionContent[] = FICHE_TEMPLATE_V1_SECTIONS.map((sid) => ({
+      section_id: sid,
+      contenu: sid === 'deroulement'
+        ? `1. Étape un (10 min) : ${verbeux} 2. Étape deux (15 min) : ${verbeux} 3. Étape trois (15 min) : ${verbeux} 4. Étape quatre (10 min) : ${verbeux}`
+        : verbeux,
+      methode: null,
+    }))
+    const score = computePedagogicalScore(sections, makeCtx())
+    expect(score.criteria.noFiller).toBe(false)
+    expect(score.score).toBeLessThan(80) // AVANT F-31 : verbeux creux passait
+    expect(score.details.some((d) => d.includes('Remplissage'))).toBe(true)
+    expect(isPublishable(score)).toBe(false)
+  })
+
+  it('évaluation sans critères de réussite explicites pénalisée', () => {
+    const sections = makeQualitySections().map((s) =>
+      s.section_id === 'evaluation'
+        ? { ...s, contenu: 'Les élèves feront un exercice sur le théorème de Pythagore avec un triangle rectangle, puis un calcul de l\'hypoténuse, puis un problème avec une échelle contre un mur, et enfin une courte vérification de la nature d\'un triangle.' }
+        : s,
+    )
+    const score = computePedagogicalScore(sections, makeCtx())
+    expect(score.criteria.evaluationCriteria).toBe(false)
+    expect(score.details.some((d) => d.includes('critères de réussite'))).toBe(true)
+  })
+
+  it('évaluation hors-sujet par rapport aux objectifs pénalisée', () => {
+    const horsSujet = 'Critère de réussite : les élèves classeront correctement les vertébrés en mammifères, reptiles, amphibiens et oiseaux, puis identifieront les espèces carnassières et herbivores de la zoologie générale.'
+    const sections = makeQualitySections().map((s) =>
+      s.section_id === 'evaluation' ? { ...s, contenu: horsSujet } : s,
+    )
+    const score = computePedagogicalScore(sections, makeCtx())
+    expect(score.criteria.objectivesAssessed).toBe(false)
+    expect(score.details.some((d) => d.includes('ne recouvre pas les objectifs'))).toBe(true)
+  })
+
+  it('fiche de qualité : les 3 nouveaux critères de substance sont true', () => {
+    const score = computePedagogicalScore(makeQualitySections(), makeCtx())
+    expect(score.criteria.noFiller).toBe(true)
+    expect(score.criteria.evaluationCriteria).toBe(true)
+    expect(score.criteria.objectivesAssessed).toBe(true)
+    // et la fiche reste publishable — F-31 n'a pas cassé les bonnes fiches
+    expect(isPublishable(score)).toBe(true)
+  })
+})

@@ -163,15 +163,19 @@ export async function validatePedagogique(
   const start = Date.now()
 
   // Détermine si on active la dimension contexte_classe (v2 + contexte présent)
+  // F-31 : dimension exactitude_contenu ajoutée aux DEUX versions — l'audit
+  // (EXP D1) a montré qu'aucune dimension ne vérifiait l'exactitude factuelle
+  // (erreur 3/4=6/9 jamais identifiée, raisons incidentes).
   const activeContexte = version === 'v2' && !!ctx.contexte_classe
   const dimensions = activeContexte
-    ? ['clarte', 'coherence_progression', 'pertinence_exemples', 'adequation_contexte_classe']
-    : ['clarte', 'coherence_progression', 'pertinence_exemples']
+    ? ['clarte', 'coherence_progression', 'pertinence_exemples', 'exactitude_contenu', 'adequation_contexte_classe']
+    : ['clarte', 'coherence_progression', 'pertinence_exemples', 'exactitude_contenu']
 
   const labelsDim: Record<string, string> = {
     clarte: 'Clarté (formulations accessibles aux élèves)',
     coherence_progression: 'Cohérence de la progression (prérequis → objectifs → évaluation)',
     pertinence_exemples: 'Pertinence des exemples (ancrage dans les exemples pédagogiques fournis)',
+    exactitude_contenu: 'Exactitude du contenu (calculs, définitions et faits corrects, strictement adossés aux notions imposées)',
     adequation_contexte_classe: 'Adéquation au contexte classe (effectif, matériel, durée)',
   }
 
@@ -186,6 +190,11 @@ Barème par dimension :
 - 3 = suffisant
 - 2 = insuffisant
 - 1 = très insuffisant
+
+Dimension "exactitude_contenu" — mode vérification active (intransigeant) :
+- Recalcule systématiquement CHAQUE calcul numérique rencontré dans la fiche.
+- Vérifie que définitions et énoncés sont corrects et strictement adossés aux notions imposées (aucun objectif ni théorème inventé).
+- UN SEUL calcul ou fait mathématique faux = note 1 sur cette dimension.
 
 === NOTIONS À COUVRIR ===
 ${ctx.notions.map((n) => `${n.nom} (objectifs: ${n.objectifs.join(', ')})`).join('\n')}

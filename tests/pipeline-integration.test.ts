@@ -15,6 +15,25 @@ import { FICHE_TEMPLATE_V1_SECTIONS } from '@/lib/contracts'
 import type { GenerationContext } from '@/lib/contracts'
 
 // ============================================================
+// Générateur de contenu synthétique VARIE — F-31 : le détecteur de remplissage
+// pénalise les phrases répétées à l'identique, donc chaque phrase est unique.
+// ============================================================
+function makeVariedContent(sid: string, targetWords: number): string {
+  const nbPhrases = Math.ceil(targetWords / 9) + 1
+  const phrases: string[] = []
+  for (let i = 1; i <= nbPhrases; i++) {
+    // F-31 : le déroulement exige des étapes numérotées EN DÉBUT DE LIGNE (critère progression)
+    const prefix = sid === 'deroulement' ? `\n${i}. ` : ''
+    phrases.push(`${prefix}Point ${i} de la section ${sid} : contenu substantiel varié numero ${i} pour couvrir le seuil de mots requis.`)
+  }
+  const base = phrases.join(' ')
+  // F-31 : l'évaluation doit porter des critères de réussite explicites (critère substance)
+  return sid === 'evaluation'
+    ? base + ' Critère de réussite : au moins trois réponses justes avec démarche visible.'
+    : base
+}
+
+// ============================================================
 // Test d'intégration : pipeline complet (sans LLM — fallback dégradé)
 // On appelle chaque étape manuellement pour vérifier la chaîne.
 // ============================================================
@@ -50,13 +69,14 @@ describe("Pipeline complet — intégration", () => {
 
     // 4. Critique — validation structurelle
     //    On construit des sections valides (assez longues pour chaque seuil min_mots)
+    //    F-31 : phrases VARIEES (le détecteur de remplissage pénalise les phrases répétées)
     const wordCounts: Record<string, number> = {
       objectifs: 50, prerequis: 50, deroulement: 130, activites: 90,
       differentiation: 50, evaluation: 50, prolongement: 45,
     }
     const validSections = FICHE_TEMPLATE_V1_SECTIONS.map((sid) => ({
       section_id: sid,
-      contenu: `Contenu substantiel pour la section ${sid}. `.repeat(Math.ceil((wordCounts[sid] || 50) / 6) + 2),
+      contenu: makeVariedContent(sid, wordCounts[sid] || 50),
       methode: null,
     }))
     const structResult = validateStructurel(validSections, ctx)
